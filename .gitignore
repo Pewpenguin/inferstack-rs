@@ -1,0 +1,44 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Binary output
+*.exe
+*.out
+*.app
+
+# VS Code
+.vscode/
+
+# JetBrains IDEs
+.idea/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/logs/
+
+# Model files
+*.onnx
+*.pt
+*.pb
+models/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Docker-related
+docker-compose.override.yml
+
+# Coverage and test output
+/coverage/
+/test-results/
+
+# Redis/Mongo dump
+dump.rdb
+*.aof
