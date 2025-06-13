@@ -1,6 +1,7 @@
 mod model;
 mod api;
 mod config;
+mod cache;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -14,6 +15,7 @@ use dotenvy::dotenv;
 use crate::model::ModelService;
 use crate::api::routes;
 use crate::config::AppConfig;
+use crate::cache::CacheService;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,10 +31,24 @@ async fn main() -> Result<()> {
         anyhow::bail!("Model file not found: {}", config.model_path);
     }
     
+    let cache_service = if let Some(redis_url) = &config.redis_url {
+        info!("Initializing Redis cache with URL: {}", redis_url);
+        let service = CacheService::new(redis_url)
+            .context("Failed to initialize cache service")?;
+        Some(Arc::new(service))
+    } else {
+        info!("No Redis URL provided, running without cache");
+        None
+    };
+    
     let model_service = Arc::new(
-        ModelService::new(&config.model_path)
-            .await
-            .context("Failed to initialize model service")?,
+        ModelService::new(
+            &config.model_path,
+            cache_service,
+            config.cache_ttl
+        )
+        .await
+        .context("Failed to initialize model service")?,
     );
     
     let app = routes::create_router(model_service)
