@@ -1,27 +1,27 @@
 use anyhow::{Context, Result};
-use redis::{AsyncCommands, Client};
+use deadpool_redis::{Config, Pool, Runtime};
+use redis::{AsyncCommands, cmd};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info};
 
 pub struct CacheService {
-    client: Client,
+    pool: Pool,
 }
 
 impl CacheService {
-    pub fn new(redis_url: &str) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .context("Failed to create Redis client")?;
+    pub async fn new(redis_url: &str) -> Result<Self> {
+        let cfg = Config::from_url(redis_url);
+        let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         
-        Ok(Self { client })
+        Ok(Self { pool })
     }
     
     pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
-        let mut conn = self.client.get_multiplexed_tokio_connection().await
-            .context("Failed to connect to Redis")?;
+        let mut conn = self.pool.get().await
+            .context("Failed to get Redis connection from pool")?;
         
-        let result: Option<String> = conn.get::<_, _>(key)
-            .await
+        let result: Option<String> = conn.get(key).await
             .context("Failed to get value from Redis")?;
 
         match result {
@@ -39,19 +39,28 @@ impl CacheService {
     }
     
     pub async fn set<T: Serialize>(&self, key: &str, value: &T, ttl_seconds: Option<usize>) -> Result<()> {
-        let mut conn = self.client.get_multiplexed_tokio_connection().await
-            .context("Failed to connect to Redis")?;
+        let mut conn = self.pool.get().await
+            .context("Failed to get Redis connection from pool")?;
         
         let serialized = serde_json::to_string(value)
             .context("Failed to serialize value for caching")?;
         
         match ttl_seconds {
             Some(ttl) => {
-                let (): () = conn.set_ex(key, serialized, ttl as u64).await
+                cmd("SETEX")
+                    .arg(key)
+                    .arg(ttl)
+                    .arg(serialized)
+                    .query_async::<_, ()>(&mut conn)
+                    .await
                     .context("Failed to set value in Redis with expiry")?;
             },
             None => {
-                let () = conn.set::<_, _, ()>(key, serialized).await
+                cmd("SET")
+                    .arg(key)
+                    .arg(serialized)
+                    .query_async::<_, ()>(&mut conn)
+                    .await
                     .context("Failed to set value in Redis")?;
             }
         }

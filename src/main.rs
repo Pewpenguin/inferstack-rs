@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     
     let cache_service = if let Some(redis_url) = &config.redis_url {
         info!("Initializing Redis cache with URL: {}", redis_url);
-        let service = CacheService::new(redis_url)
+        let service = CacheService::new(redis_url).await
             .context("Failed to initialize cache service")?;
         Some(Arc::new(service))
     } else {
