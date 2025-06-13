@@ -32,13 +32,13 @@ pub async fn inference_handler(
         .infer(request.data)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     Ok(Json(InferenceResponse { prediction }))
 }
 
 pub mod routes {
     use super::*;
-    
+
     pub fn create_router(model_service: Arc<ModelService>) -> Router {
         Router::new()
             .route("/health", get(health_check))
