@@ -32,7 +32,7 @@ impl ModelService {
     }
     
     pub async fn infer(&self, input_data: Vec<f32>) -> Result<Vec<f32>> {
-        let model = self.model.lock().await;
+        let model: tokio::sync::MutexGuard<'_, SimplePlan<TypedFact, Box<dyn TypedOp + 'static>, Graph<TypedFact, Box<dyn TypedOp + 'static>>>> = self.model.lock().await;
         
         let input = tract_ndarray::Array::from_shape_vec(
             (1, input_data.len()),
