@@ -1,39 +1,58 @@
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error};
 
 use crate::model::ModelService;
+use crate::metrics::{self, Timer};
 
 #[derive(Debug, Deserialize)]
 pub struct InferenceRequest {
-    data: Vec<f32>,
+    input: Vec<f32>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct InferenceResponse {
-    prediction: Vec<f32>,
+    output: Vec<f32>,
 }
 
-pub async fn health_check() -> StatusCode {
+pub async fn health_check() -> impl IntoResponse {
+    debug!("Health check requested");
+    metrics::record_api_request("health", "success");
     StatusCode::OK
 }
 
 pub async fn inference_handler(
     State(model_service): State<Arc<ModelService>>,
     Json(request): Json<InferenceRequest>,
-) -> Result<Json<InferenceResponse>, StatusCode> {
-    let prediction = model_service
-        .infer(request.data)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> impl IntoResponse {
+    debug!("Received inference request");
+    
+    let timer = Timer::new();
+    metrics::record_api_request("inference", "started");
 
-    Ok(Json(InferenceResponse { prediction }))
+    let result = match model_service.infer(request.input).await {
+        Ok(prediction) => {
+            metrics::record_api_request("inference", "success");
+            let response = InferenceResponse { output: prediction };
+            (StatusCode::OK, Json(response))
+        }
+        Err(e) => {
+            metrics::record_api_request("inference", "error");
+            metrics::record_error("api_inference");
+            error!("Inference error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(InferenceResponse { output: vec![] }))
+        }
+    };
+    
+    metrics::record_api_latency("inference", timer.elapsed_seconds());
+    
+    result
 }
 
 pub mod routes {

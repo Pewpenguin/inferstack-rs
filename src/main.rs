@@ -1,6 +1,7 @@
 mod api;
 mod cache;
 mod config;
+mod metrics;
 mod model;
 
 use std::net::SocketAddr;
@@ -8,6 +9,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::Router;
+use axum_prometheus::PrometheusMetricLayer;
 use dotenvy::dotenv;
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
@@ -46,7 +49,13 @@ async fn main() -> Result<()> {
             .context("Failed to initialize model service")?,
     );
 
-    let app = routes::create_router(model_service).layer(TraceLayer::new_for_http());
+    let (prometheus_layer, metrics_handler) = PrometheusMetricLayer::pair();
+    
+    let app = Router::new()
+        .merge(routes::create_router(model_service))
+        .route("/metrics", axum::routing::get(|| async move { metrics_handler.render() }))
+        .layer(prometheus_layer)
+        .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Server listening on {}", addr);
