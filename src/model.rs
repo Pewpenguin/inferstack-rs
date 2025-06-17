@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result as AnyhowResult};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use tract_core::prelude::*;
@@ -21,7 +21,7 @@ impl ModelService {
         model_path: &str,
         cache: Option<Arc<CacheService>>,
         cache_ttl: Option<usize>,
-    ) -> Result<Self> {
+    ) -> AnyhowResult<Self> {
         info!("Loading model from {}", model_path);
 
         let model = tract_onnx::onnx()
@@ -41,7 +41,7 @@ impl ModelService {
         })
     }
 
-    pub async fn infer(&self, input_data: Vec<f32>) -> Result<Vec<f32>> {
+    pub async fn infer(&self, input_data: Vec<f32>) -> AnyhowResult<Vec<f32>> {
         metrics::record_batch_size(input_data.len());
         
         let timer = Timer::new();
@@ -64,7 +64,7 @@ impl ModelService {
         result
     }
     
-    async fn infer_with_metrics(&self, input_data: Vec<f32>, cached: &mut bool) -> Result<Vec<f32>> {
+    async fn infer_with_metrics(&self, input_data: Vec<f32>, cached: &mut bool) -> AnyhowResult<Vec<f32>> {
         if let Some(cache) = &self.cache {
             let cache_key = CacheService::generate_key("inference", &input_data)
                 .context("Failed to generate cache key")?;
@@ -108,7 +108,7 @@ impl ModelService {
         }
     }
 
-    async fn perform_inference(&self, input_data: Vec<f32>) -> Result<Vec<f32>> {
+    async fn perform_inference(&self, input_data: Vec<f32>) -> AnyhowResult<Vec<f32>> {
         let timer = Timer::new();
         
         let model = self.model.lock().await;

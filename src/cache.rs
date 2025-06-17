@@ -1,22 +1,23 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result as AnyhowResult};
 use deadpool_redis::redis::{cmd, AsyncCommands};
 use deadpool_redis::{Config, Pool, Runtime};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info};
 
+
 pub struct CacheService {
     pool: Pool,
 }
 
 impl CacheService {
-    pub async fn new(redis_url: &str) -> Result<Self> {
+    pub async fn new(redis_url: &str) -> AnyhowResult<Self> {
         let cfg = Config::from_url(redis_url);
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         Ok(Self { pool })
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> AnyhowResult<Option<T>> {
         let mut conn = self
             .pool
             .get()
@@ -47,7 +48,7 @@ impl CacheService {
         key: &str,
         value: &T,
         ttl_seconds: Option<usize>,
-    ) -> Result<()> {
+    ) -> AnyhowResult<()> {
         let mut conn = self
             .pool
             .get()
@@ -81,7 +82,7 @@ impl CacheService {
         Ok(())
     }
 
-    pub fn generate_key<T: Serialize>(prefix: &str, data: &T) -> Result<String> {
+    pub fn generate_key<T: Serialize>(prefix: &str, data: &T) -> AnyhowResult<String> {
         let serialized =
             serde_json::to_string(data).context("Failed to serialize data for key generation")?;
 

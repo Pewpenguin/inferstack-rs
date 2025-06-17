@@ -23,6 +23,20 @@ lazy_static! {
         &["operation", "result"]
     )
     .unwrap();
+    
+    pub static ref VALIDATION_COUNTER: CounterVec = register_counter_vec!(
+        "inferstack_validation_total",
+        "Total number of validation errors",
+        &["type"]
+    )
+    .unwrap();
+    
+    pub static ref RATE_LIMIT_COUNTER: CounterVec = register_counter_vec!(
+        "inferstack_rate_limit_total",
+        "Total number of rate limit events",
+        &["action"]
+    )
+    .unwrap();
 
     pub static ref INFERENCE_LATENCY: HistogramVec = register_histogram_vec!(
         "inferstack_inference_duration_seconds",
@@ -111,4 +125,13 @@ pub fn record_batch_size(size: usize) {
 
 pub fn record_error(error_type: &str) {
     ERROR_COUNTER.with_label_values::<&str>(&[error_type]).inc();
+}
+
+pub fn record_validation_error(validation_type: &str) {
+    VALIDATION_COUNTER.with_label_values::<&str>(&[validation_type]).inc();
+    record_error("validation");
+}
+
+pub fn record_rate_limit(action: &str) {
+    RATE_LIMIT_COUNTER.with_label_values::<&str>(&[action]).inc();
 }
