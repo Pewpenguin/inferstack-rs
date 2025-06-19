@@ -9,13 +9,15 @@ mod model;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
 use axum_prometheus::PrometheusMetricLayer;
 use dotenvy::dotenv;
+use tokio::signal;
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 
 use crate::middleware::RateLimiter;
 
@@ -58,12 +60,22 @@ async fn main() -> Result<()> {
         config.rate_limit_window_secs
     ));
     
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    
     let rate_limiter_clone = rate_limiter.clone();
-    tokio::spawn(async move {
+    let mut cleanup_shutdown_rx = shutdown_tx.subscribe();
+    let cleanup_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            rate_limiter_clone.cleanup();
+            tokio::select! {
+                _ = interval.tick() => {
+                    rate_limiter_clone.cleanup();
+                }
+                _ = cleanup_shutdown_rx.recv() => {
+                    info!("Shutting down rate limiter cleanup task");
+                    break;
+                }
+            }
         }
     });
     
@@ -89,8 +101,49 @@ async fn main() -> Result<()> {
         .context("Failed to bind to address")?;
 
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
-
-    axum::serve(listener, app).await.context("Server error")?;
-
+    
+    info!("Setting up graceful shutdown handler");
+    let server = axum::serve(listener, app);
+    
+    let shutdown_signal = async move {
+        let ctrl_c = async {
+            signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+        };
+        
+        #[cfg(unix)]
+        let terminate = async {
+            signal::unix::signal(signal::unix::SignalKind::terminate())
+                .expect("Failed to install signal handler")
+                .recv()
+                .await;
+        };
+        
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+        
+        info!("Shutdown signal received, starting graceful shutdown");
+         
+         let _ = shutdown_tx.send(());
+    };
+    
+    server.with_graceful_shutdown(shutdown_signal)
+        .await
+        .context("Server error")?;
+    
+    info!("Server has been gracefully shut down");
+    
+    if let Err(e) = cleanup_task.await {
+        warn!("Error waiting for cleanup task to finish: {}", e);
+    }
+    
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    
     Ok(())
 }
