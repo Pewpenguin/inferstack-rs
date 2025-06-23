@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result as AnyhowResult};
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tract_core::prelude::*;
 use tract_onnx::prelude::*;
 
@@ -43,16 +44,16 @@ impl ModelService {
 
     pub async fn infer(&self, input_data: Vec<f32>) -> AnyhowResult<Vec<f32>> {
         metrics::record_batch_size(input_data.len());
-        
+
         let timer = Timer::new();
         let mut cached = false;
-        
+
         metrics::record_inference_request("started");
-        
+
         let result = self.infer_with_metrics(input_data, &mut cached).await;
-        
+
         metrics::record_inference_latency(timer.elapsed_seconds(), cached);
-        
+
         match &result {
             Ok(_) => metrics::record_inference_request("success"),
             Err(_) => {
@@ -60,18 +61,24 @@ impl ModelService {
                 metrics::record_error("inference");
             }
         }
-        
+
         result
     }
-    
-    async fn infer_with_metrics(&self, input_data: Vec<f32>, cached: &mut bool) -> AnyhowResult<Vec<f32>> {
+
+    async fn infer_with_metrics(
+        &self,
+        input_data: Vec<f32>,
+        cached: &mut bool,
+    ) -> AnyhowResult<Vec<f32>> {
         if let Some(cache) = &self.cache {
-            let cache_key = CacheService::generate_key("inference", &input_data)
+            let cache_key = CacheService::generate_key_with_version("inference", &input_data, 1)
                 .context("Failed to generate cache key")?;
 
             metrics::record_cache_operation("get", "attempt");
-            
-            match cache.get::<Vec<f32>>(&cache_key).await {
+
+            let cache_result = cache.get_with_retry::<Vec<f32>>(&cache_key, 2, 50).await;
+
+            match cache_result {
                 Ok(Some(cached_result)) => {
                     debug!("Using cached inference result");
                     metrics::record_cache_operation("get", "hit");
@@ -80,26 +87,39 @@ impl ModelService {
                 }
                 Ok(None) => {
                     metrics::record_cache_operation("get", "miss");
+                    debug!("Cache miss for key: {}", cache_key);
                 }
                 Err(e) => {
                     metrics::record_cache_operation("get", "error");
                     metrics::record_error("cache_get");
-                    debug!("Cache get error: {}", e);
+                    warn!("Cache get error: {}", e);
                 }
             }
 
+            let start = Instant::now();
             let result = self.perform_inference(input_data.clone()).await?;
+            let inference_time = start.elapsed().as_millis();
+            debug!("Model inference completed in {} ms", inference_time);
 
-            metrics::record_cache_operation("set", "attempt");
-            match cache.set(&cache_key, &result, self.cache_ttl).await {
-                Ok(_) => {
-                    metrics::record_cache_operation("set", "success");
+            if inference_time > 5 {
+                metrics::record_cache_operation("set", "attempt");
+
+                match cache
+                    .set_with_retry(&cache_key, &result, self.cache_ttl, 2, 50)
+                    .await
+                {
+                    Ok(_) => {
+                        metrics::record_cache_operation("set", "success");
+                        debug!("Successfully cached inference result");
+                    }
+                    Err(e) => {
+                        metrics::record_cache_operation("set", "error");
+                        metrics::record_error("cache_set");
+                        warn!("Cache set error: {}", e);
+                    }
                 }
-                Err(e) => {
-                    metrics::record_cache_operation("set", "error");
-                    metrics::record_error("cache_set");
-                    debug!("Cache set error: {}", e);
-                }
+            } else {
+                debug!("Skipping cache for fast inference ({}ms)", inference_time);
             }
 
             Ok(result)
@@ -110,7 +130,7 @@ impl ModelService {
 
     async fn perform_inference(&self, input_data: Vec<f32>) -> AnyhowResult<Vec<f32>> {
         let timer = Timer::new();
-        
+
         let model = self.model.lock().await;
 
         let input = tract_ndarray::Array::from_shape_vec((1, input_data.len()), input_data)
@@ -125,7 +145,7 @@ impl ModelService {
             .context("Failed to convert output to array")?;
 
         metrics::record_model_execution_time(timer.elapsed_seconds());
-        
+
         Ok(output.iter().copied().collect())
     }
 }

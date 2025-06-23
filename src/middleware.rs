@@ -10,6 +10,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::error::AppError;
@@ -49,15 +50,52 @@ impl RateLimiter {
         }
     }
 
-    pub fn cleanup(&self) {
-        let now = Instant::now();
-        let window_start = now - self.window_duration;
+    pub async fn cleanup(
+        self: Arc<Self>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+        cleanup_interval_secs: u64,
+    ) {
+        let cleanup_interval = Duration::from_secs(cleanup_interval_secs);
+        debug!(
+            "Starting rate limiter cleanup task with interval: {}s",
+            cleanup_interval_secs
+        );
+        let mut interval = tokio::time::interval(cleanup_interval);
 
-        let mut requests = self.requests.lock().unwrap();
-        requests.retain(|_, timestamps| {
-            timestamps.retain(|&timestamp| timestamp >= window_start);
-            !timestamps.is_empty()
-        });
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let start = Instant::now();
+                    let window_start = Instant::now() - self.window_duration;
+                    let mut requests = self.requests.lock().unwrap();
+                    let initial_count = requests.len();
+
+                    requests.retain(|_ip, timestamps| {
+                        timestamps.retain(|&t| t >= window_start);
+                        !timestamps.is_empty()
+                    });
+
+                    let removed = initial_count - requests.len();
+                    let elapsed = start.elapsed();
+
+                    if removed > 0 {
+                        debug!(
+                            "Rate limiter cleanup: removed {} expired entries, {} remaining (took {:?})",
+                            removed, requests.len(), elapsed
+                        );
+                    } else if !requests.is_empty() {
+                        debug!(
+                            "Rate limiter cleanup: no expired entries, {} remaining (took {:?})",
+                            requests.len(), elapsed
+                        );
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    debug!("Shutting down rate limiter cleanup task");
+                    break;
+                }
+            }
+        }
     }
 }
 

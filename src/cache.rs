@@ -3,7 +3,8 @@ use deadpool_redis::redis::{cmd, AsyncCommands};
 use deadpool_redis::{Config, Pool, Runtime};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use std::time::Duration;
+use tracing::debug;
 
 
 pub struct CacheService {
@@ -11,10 +12,72 @@ pub struct CacheService {
 }
 
 impl CacheService {
-    pub async fn new(redis_url: &str) -> AnyhowResult<Self> {
+    
+    pub async fn new_with_pool_size(redis_url: &str, pool_size: u32) -> AnyhowResult<Self> {
         let cfg = Config::from_url(redis_url);
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
+        debug!("Initialized Redis connection pool with size: {}", pool_size);
         Ok(Self { pool })
+    }
+    
+    pub async fn health_check(&self) -> AnyhowResult<()> {
+        let mut conn = self.pool.get().await
+            .context("Failed to get Redis connection from pool")?;
+        cmd("PING").query_async::<()>(&mut conn).await
+            .context("Redis health check failed")?;
+        Ok(())
+    }
+    
+    pub async fn get_with_retry<T: DeserializeOwned>(
+        &self, 
+        key: &str, 
+        retries: u32, 
+        retry_delay_ms: u64
+    ) -> AnyhowResult<Option<T>> {
+        let mut attempts = 0;
+        let max_attempts = retries + 1;
+        
+        loop {
+            attempts += 1;
+            match self.get::<T>(key).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if attempts >= max_attempts {
+                        return Err(e);
+                    }
+                    debug!("Redis GET retry {}/{} for key '{}': {}", 
+                           attempts, max_attempts, key, e);
+                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                }
+            }
+        }
+    }
+    
+    pub async fn set_with_retry<T: Serialize>(
+        &self, 
+        key: &str, 
+        value: &T, 
+        ttl_seconds: Option<usize>, 
+        retries: u32, 
+        retry_delay_ms: u64
+    ) -> AnyhowResult<()> {
+        let mut attempts = 0;
+        let max_attempts = retries + 1;
+
+        loop {
+            attempts += 1;
+            match self.set(key, value, ttl_seconds).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if attempts >= max_attempts {
+                        return Err(e);
+                    }
+                    debug!("Redis SET retry {}/{} for key '{}': {}", 
+                           attempts, max_attempts, key, e);
+                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                }
+            }
+        }
     }
 
     pub async fn get<T: DeserializeOwned>(&self, key: &str) -> AnyhowResult<Option<T>> {
@@ -81,19 +144,20 @@ impl CacheService {
         debug!("Cached value for key: {}", key);
         Ok(())
     }
-
-    pub fn generate_key<T: Serialize>(prefix: &str, data: &T) -> AnyhowResult<String> {
+    
+    pub fn generate_key_with_version<T: Serialize>(prefix: &str, data: &T, version: u32) -> AnyhowResult<String> {
         let serialized =
             serde_json::to_string(data).context("Failed to serialize data for key generation")?;
 
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());
+        hasher.update(version.to_string().as_bytes());
         let hash = hasher.finalize();
 
         let hash_hex = format!("{:x}", hash);
-        let key = format!("{}_{}", prefix, hash_hex);
+        let key = format!("{}_v{}{}", prefix, version, hash_hex);
 
-        info!("Generated key: {}", key);
+        debug!("Generated versioned key: {}", key);
         Ok(key)
     }
 }
