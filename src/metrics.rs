@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use prometheus::{register_counter_vec, register_histogram_vec, CounterVec, HistogramVec};
 use std::time::Instant;
-
+use tracing::debug;
 lazy_static! {
     pub static ref INFERENCE_COUNTER: CounterVec = register_counter_vec!(
         "inferstack_inference_total",
@@ -37,6 +37,13 @@ lazy_static! {
         &["action"]
     )
     .unwrap();
+    
+    pub static ref BATCH_COUNTER: CounterVec = register_counter_vec!(
+        "inferstack_batch_items_total",
+        "Total number of items processed in batches",
+        &["status"]
+    )
+    .unwrap();
 
     pub static ref INFERENCE_LATENCY: HistogramVec = register_histogram_vec!(
         "inferstack_inference_duration_seconds",
@@ -67,6 +74,14 @@ lazy_static! {
         "Size of input batches",
         &[],
         vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0]
+    )
+    .unwrap();
+    
+    pub static ref BATCH_THROUGHPUT: HistogramVec = register_histogram_vec!(
+        "inferstack_batch_throughput_items_per_second",
+        "Batch processing throughput in items per second",
+        &[],
+        vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0]
     )
     .unwrap();
 
@@ -134,4 +149,16 @@ pub fn record_validation_error(validation_type: &str) {
 
 pub fn record_rate_limit(action: &str) {
     RATE_LIMIT_COUNTER.with_label_values::<&str>(&[action]).inc();
+}
+
+pub fn record_batch_item(status: &str) {
+    BATCH_COUNTER.with_label_values::<&str>(&[status]).inc();
+}
+
+pub fn record_batch_throughput(batch_size: usize, duration_seconds: f64) {
+    if duration_seconds > 0.0 {
+        let items_per_second = batch_size as f64 / duration_seconds;
+        debug!("Batch throughput: {:.2} items/second", items_per_second);
+        BATCH_THROUGHPUT.with_label_values::<&str>(&[]).observe(items_per_second);
+    }
 }

@@ -15,7 +15,9 @@ use crate::metrics::{self, Timer};
 
 #[derive(Debug, Deserialize)]
 pub struct InferenceRequest {
-    input: Vec<f32>,
+    pub input: Vec<Vec<f32>>,
+    #[serde(default)]
+    batch: bool,
 }
 
 pub struct AppState {
@@ -25,28 +27,44 @@ pub struct AppState {
 
 
 impl InferenceRequest {
-    pub fn validate(&self, min_size: usize, max_size: usize) -> Result<(), AppError> {
-        let input_len = self.input.len();
-        
-        if input_len < min_size {
-            metrics::record_validation_error("input_too_small");
+    pub fn validate(&self, min_size: usize, max_size: usize, max_batch_size: usize) -> Result<(), AppError> {
+        if self.input.is_empty() {
+            metrics::record_validation_error("empty_batch");
             return Err(AppError::ValidationError(
-                format!("Input size too small: {} (minimum: {})", input_len, min_size)
+                "Batch cannot be empty".to_string()
             ));
         }
         
-        if input_len > max_size {
-            metrics::record_validation_error("input_too_large");
+        if self.input.len() > max_batch_size {
+            metrics::record_validation_error("batch_too_large");
             return Err(AppError::ValidationError(
-                format!("Input size too large: {} (maximum: {})", input_len, max_size)
+                format!("Batch size too large: {} (maximum: 32)", self.input.len())
             ));
         }
         
-        if self.input.iter().any(|&x| x.is_nan() || x.is_infinite()) {
-            metrics::record_validation_error("invalid_values");
-            return Err(AppError::ValidationError(
-                "Input contains NaN or infinity values".to_string()
-            ));
+        for (i, input) in self.input.iter().enumerate() {
+            let input_len = input.len();
+            
+            if input_len < min_size {
+                metrics::record_validation_error("input_too_small");
+                return Err(AppError::ValidationError(
+                    format!("Input at index {} size too small: {} (minimum: {})", i, input_len, min_size)
+                ));
+            }
+            
+            if input_len > max_size {
+                metrics::record_validation_error("input_too_large");
+                return Err(AppError::ValidationError(
+                    format!("Input at index {} size too large: {} (maximum: {})", i, input_len, max_size)
+                ));
+            }
+            
+            if input.iter().any(|&x| x.is_nan() || x.is_infinite()) {
+                metrics::record_validation_error("invalid_values");
+                return Err(AppError::ValidationError(
+                    format!("Input at index {} contains NaN or infinity values", i)
+                ));
+            }
         }
         
         Ok(())
@@ -55,7 +73,7 @@ impl InferenceRequest {
 
 #[derive(Debug, Serialize)]
 pub struct InferenceResponse {
-    output: Vec<f32>,
+    output: Vec<Vec<f32>>,
 }
 
 pub async fn health_check() -> impl IntoResponse {
@@ -70,36 +88,118 @@ pub async fn inference_handler(
 ) -> impl IntoResponse {
     let model_service = &state.model_service;
     let config = &state.config;
-    debug!("Received inference request with input size: {}", request.input.len());
+    let batch_size = request.input.len();
+    let endpoint = if request.batch { "batch_inference" } else { "inference" };
+    
+    debug!("Received {} request with batch size: {}", endpoint, batch_size);
     
     let timer = Timer::new();
-    metrics::record_api_request("inference", "started");
+    metrics::record_api_request(endpoint, "started");
     
-    if let Err(err) = request.validate(config.min_input_size, config.max_input_size) {
-        metrics::record_api_request("inference", "validation_error");
+    if let Err(err) = request.validate(config.min_input_size, config.max_input_size, config.max_batch_size) {
+        metrics::record_api_request(endpoint, "validation_error");
         error!("Validation error: {}", err);
         return err.into_response();
     }
-
-    let result = match model_service.infer(request.input).await {
-        Ok(prediction) => {
-            metrics::record_api_request("inference", "success");
-            let response = InferenceResponse { output: prediction };
-            (StatusCode::OK, Json(response)).into_response()
+    
+    let result = if !request.batch {
+        if batch_size != 1 {
+            metrics::record_api_request(endpoint, "validation_error");
+            let err = AppError::ValidationError(
+                "Non-batch mode requires exactly one input".to_string()
+            );
+            error!("Validation error: {}", err);
+            return err.into_response();
         }
-        Err(e) => {
-            metrics::record_api_request("inference", "error");
-            metrics::record_error("api_inference");
-            error!("Inference error: {}", e);
-            
-            let app_error = AppError::InferenceError(e.to_string());
-            app_error.into_response()
+        
+        match model_service.infer(request.input[0].clone()).await {
+            Ok(prediction) => {
+                metrics::record_api_request(endpoint, "success");
+                let response = InferenceResponse { output: vec![prediction] };
+                (StatusCode::OK, Json(response)).into_response()
+            }
+            Err(e) => {
+                metrics::record_api_request(endpoint, "error");
+                metrics::record_error("api_inference");
+                error!("Inference error: {}", e);
+                
+                let app_error = AppError::InferenceError(e.to_string());
+                app_error.into_response()
+            }
+        }
+    } else {
+        match process_batch(model_service, request.input).await {
+            Ok(predictions) => {
+                metrics::record_api_request(endpoint, "success");
+                let response = InferenceResponse { output: predictions };
+                (StatusCode::OK, Json(response)).into_response()
+            }
+            Err(e) => {
+                metrics::record_api_request(endpoint, "error");
+                metrics::record_error("api_batch_inference");
+                error!("Batch inference error: {}", e);
+                
+                let app_error = AppError::InferenceError(e.to_string());
+                app_error.into_response()
+            }
         }
     };
     
-    metrics::record_api_latency("inference", timer.elapsed_seconds());
+    metrics::record_api_latency(endpoint, timer.elapsed_seconds());
     
     result
+}
+
+async fn process_batch(
+    model_service: &Arc<ModelService>,
+    inputs: Vec<Vec<f32>>
+) -> anyhow::Result<Vec<Vec<f32>>> {
+    use futures::future;
+    use anyhow::Context;
+    
+    let batch_size = inputs.len();
+    debug!("Processing batch of size: {}", batch_size);
+    metrics::record_batch_size(batch_size);
+    
+    let batch_timer = Timer::new();
+    
+    let futures = inputs.into_iter().enumerate().map(|(idx, input)| {
+        let model_service = model_service.clone();
+        async move {
+            metrics::record_batch_item("started");
+            let result = model_service.infer(input).await
+                .with_context(|| format!("Failed to process batch item at index {}", idx));
+            
+            match &result {
+                Ok(_) => metrics::record_batch_item("success"),
+                Err(_) => metrics::record_batch_item("error"),
+            }
+            
+            result
+        }
+    });
+    
+    let results = future::join_all(futures).await;
+    
+    let mut outputs = Vec::with_capacity(results.len());
+    for result in results {
+        outputs.push(result?);
+    }
+    
+    let duration = batch_timer.elapsed_seconds();
+    debug!("Batch processing completed in {:.2}s", duration);
+    metrics::record_api_latency("batch_processing", duration);
+    metrics::record_batch_throughput(batch_size, duration);
+    
+    Ok(outputs)
+}
+
+pub async fn batch_inference_handler(
+    State(state): State<Arc<AppState>>,
+    Json(mut request): Json<InferenceRequest>,
+) -> impl IntoResponse {
+    request.batch = true;
+    inference_handler(State(state), Json(request)).await
 }
 
 pub mod routes {
@@ -111,6 +211,7 @@ pub mod routes {
         Router::new()
             .route("/health", get(health_check))
             .route("/infer", post(inference_handler))
+            .route("/batch", post(batch_inference_handler))
             .with_state(state)
     }
 }

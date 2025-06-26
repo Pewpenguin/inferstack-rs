@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub min_input_size: usize,
     pub redis_pool_size: usize,
     pub rate_limit_cleanup_interval: u64,
+    pub max_batch_size: usize,
 }
 
 impl AppConfig {
@@ -56,6 +57,11 @@ impl AppConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
 
+        let max_batch_size = std::env::var("MAX_BATCH_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(32);
+
         Self {
             model_path,
             port,
@@ -67,6 +73,7 @@ impl AppConfig {
             min_input_size,
             redis_pool_size,
             rate_limit_cleanup_interval,
+            max_batch_size,
         }
     }
 }
