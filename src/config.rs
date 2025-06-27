@@ -1,5 +1,15 @@
+
+pub struct ModelVersionConfig {
+    pub version: String,
+    pub path: String,
+    pub traffic_allocation: u8,
+    pub description: Option<String>,
+}
+
 pub struct AppConfig {
     pub model_path: String,
+    pub model_versions: Vec<ModelVersionConfig>,
+    pub default_version: Option<String>,
     pub port: u16,
     pub redis_url: Option<String>,
     pub cache_ttl: Option<usize>,
@@ -14,56 +24,94 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Self {
+        dotenvy::dotenv().ok();
+
         let model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| "model.onnx".to_string());
-
         let port = std::env::var("PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
+            .unwrap_or_else(|_| "3000".to_string())
+            .parse()
             .unwrap_or(3000);
-
         let redis_url = std::env::var("REDIS_URL").ok();
-
         let cache_ttl = std::env::var("CACHE_TTL")
             .ok()
-            .and_then(|ttl| ttl.parse().ok());
-
+            .and_then(|v| v.parse().ok());
         let rate_limit_requests = std::env::var("RATE_LIMIT_REQUESTS")
-            .ok()
-            .and_then(|r| r.parse().ok())
-            .unwrap_or(10);
-
+            .unwrap_or_else(|_| "100".to_string())
+            .parse()
+            .unwrap_or(100);
         let rate_limit_window_secs = std::env::var("RATE_LIMIT_WINDOW_SECS")
-            .ok()
-            .and_then(|w| w.parse().ok())
-            .unwrap_or(1);
-
-        let max_input_size = std::env::var("MAX_INPUT_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(10000);
-
-        let min_input_size = std::env::var("MIN_INPUT_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-
-        let redis_pool_size = std::env::var("REDIS_POOL_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(16);
-
-        let rate_limit_cleanup_interval = std::env::var("RATE_LIMIT_CLEANUP_INTERVAL")
-            .ok()
-            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|_| "60".to_string())
+            .parse()
             .unwrap_or(60);
-
+        let max_input_size = std::env::var("MAX_INPUT_SIZE")
+            .unwrap_or_else(|_| "1024".to_string())
+            .parse()
+            .unwrap_or(1024);
+        let min_input_size = std::env::var("MIN_INPUT_SIZE")
+            .unwrap_or_else(|_| "1".to_string())
+            .parse()
+            .unwrap_or(1);
+        let redis_pool_size = std::env::var("REDIS_POOL_SIZE")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse()
+            .unwrap_or(5);
+        let rate_limit_cleanup_interval = std::env::var("RATE_LIMIT_CLEANUP_INTERVAL")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse()
+            .unwrap_or(60);
         let max_batch_size = std::env::var("MAX_BATCH_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|_| "32".to_string())
+            .parse()
             .unwrap_or(32);
+        
+        let default_version = std::env::var("DEFAULT_MODEL_VERSION").ok();
+        
+        let model_versions = std::env::var("MODEL_VERSIONS")
+            .map(|versions_str| {
+                versions_str
+                    .split(',')
+                    .filter_map(|version_str| {
+                        let parts: Vec<&str> = version_str.splitn(4, ':').collect();
+                        if parts.len() < 3 {
+                            tracing::warn!("Invalid model version format: {}", version_str);
+                            return None;
+                        }
+                        
+                        let version = parts[0].trim().to_string();
+                        let path = parts[1].trim().to_string();
+                        let traffic_allocation = parts[2].trim().parse().unwrap_or_else(|_| {
+                            tracing::warn!("Invalid traffic allocation for version {}: {}", version, parts[2]);
+                            0
+                        });
+                        
+                        let description = if parts.len() > 3 {
+                            Some(parts[3].trim().to_string())
+                        } else {
+                            None
+                        };
+                        
+                        Some(ModelVersionConfig {
+                            version,
+                            path,
+                            traffic_allocation,
+                            description,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|_| {
+                vec![ModelVersionConfig {
+                    version: "v1".to_string(),
+                    path: model_path.clone(),
+                    traffic_allocation: 100,
+                    description: Some("Default model".to_string()),
+                }]
+            });
 
         Self {
             model_path,
+            model_versions,
+            default_version,
             port,
             redis_url,
             cache_ttl,

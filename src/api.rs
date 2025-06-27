@@ -18,6 +18,8 @@ pub struct InferenceRequest {
     pub input: Vec<Vec<f32>>,
     #[serde(default)]
     batch: bool,
+    #[serde(default)]
+    pub model_version: Option<String>,
 }
 
 pub struct AppState {
@@ -91,7 +93,8 @@ pub async fn inference_handler(
     let batch_size = request.input.len();
     let endpoint = if request.batch { "batch_inference" } else { "inference" };
     
-    debug!("Received {} request with batch size: {}", endpoint, batch_size);
+    debug!("Received {} request with batch size: {}, model version: {:?}", 
+           endpoint, batch_size, request.model_version);
     
     let timer = Timer::new();
     metrics::record_api_request(endpoint, "started");
@@ -112,7 +115,7 @@ pub async fn inference_handler(
             return err.into_response();
         }
         
-        match model_service.infer(request.input[0].clone()).await {
+        match model_service.infer_with_version(request.input[0].clone(), request.model_version.clone()).await {
             Ok(prediction) => {
                 metrics::record_api_request(endpoint, "success");
                 let response = InferenceResponse { output: vec![prediction] };
@@ -128,7 +131,7 @@ pub async fn inference_handler(
             }
         }
     } else {
-        match process_batch(model_service, request.input).await {
+        match process_batch(model_service, request.input, request.model_version.clone()).await {
             Ok(predictions) => {
                 metrics::record_api_request(endpoint, "success");
                 let response = InferenceResponse { output: predictions };
@@ -152,7 +155,8 @@ pub async fn inference_handler(
 
 async fn process_batch(
     model_service: &Arc<ModelService>,
-    inputs: Vec<Vec<f32>>
+    inputs: Vec<Vec<f32>>,
+    model_version: Option<String>
 ) -> anyhow::Result<Vec<Vec<f32>>> {
     use futures::future;
     use anyhow::Context;
@@ -165,9 +169,10 @@ async fn process_batch(
     
     let futures = inputs.into_iter().enumerate().map(|(idx, input)| {
         let model_service = model_service.clone();
+        let version = model_version.clone();
         async move {
             metrics::record_batch_item("started");
-            let result = model_service.infer(input).await
+            let result = model_service.infer_with_version(input, version).await
                 .with_context(|| format!("Failed to process batch item at index {}", idx));
             
             match &result {

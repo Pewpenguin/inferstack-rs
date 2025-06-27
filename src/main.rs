@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     };
 
     let model_service = Arc::new(
-        ModelService::new(&config.model_path, cache_service, config.cache_ttl)
+        ModelService::new_with_versions(&config.model_versions, config.default_version.clone(), cache_service, config.cache_ttl)
             .await
             .context("Failed to initialize model service")?,
     );

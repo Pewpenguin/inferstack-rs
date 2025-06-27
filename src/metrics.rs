@@ -44,6 +44,27 @@ lazy_static! {
         &["status"]
     )
     .unwrap();
+    
+    pub static ref MODEL_VERSION_USAGE: CounterVec = register_counter_vec!(
+        "inferstack_model_version_usage_total",
+        "Total number of times each model version was used",
+        &["version"]
+    )
+    .unwrap();
+    
+    pub static ref MODEL_VERSION_SUCCESS: CounterVec = register_counter_vec!(
+        "inferstack_model_version_success_total",
+        "Total number of successful inferences by model version",
+        &["version"]
+    )
+    .unwrap();
+    
+    pub static ref MODEL_VERSION_ERROR: CounterVec = register_counter_vec!(
+        "inferstack_model_version_error_total",
+        "Total number of inference errors by model version",
+        &["version"]
+    )
+    .unwrap();
 
     pub static ref INFERENCE_LATENCY: HistogramVec = register_histogram_vec!(
         "inferstack_inference_duration_seconds",
@@ -65,6 +86,14 @@ lazy_static! {
         "inferstack_model_execution_seconds",
         "Model execution time in seconds",
         &[],
+        vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+    )
+    .unwrap();
+    
+    pub static ref MODEL_VERSION_EXECUTION_TIME: HistogramVec = register_histogram_vec!(
+        "inferstack_model_version_execution_seconds",
+        "Model execution time in seconds by version",
+        &["version"],
         vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
     )
     .unwrap();
@@ -132,6 +161,23 @@ pub fn record_api_latency(endpoint: &str, duration: f64) {
 
 pub fn record_model_execution_time(duration: f64) {
     MODEL_EXECUTION_TIME.with_label_values::<&str>(&[]).observe(duration);
+}
+
+pub fn record_model_execution_time_with_version(duration: f64, version: &str) {
+    record_model_execution_time(duration);
+    MODEL_VERSION_EXECUTION_TIME.with_label_values(&[version]).observe(duration);
+}
+
+pub fn record_model_version_usage(version: &str) {
+    MODEL_VERSION_USAGE.with_label_values(&[version]).inc();
+}
+
+pub fn record_model_version_success(version: &str) {
+    MODEL_VERSION_SUCCESS.with_label_values(&[version]).inc();
+}
+
+pub fn record_model_version_error(version: &str) {
+    MODEL_VERSION_ERROR.with_label_values(&[version]).inc();
 }
 
 pub fn record_batch_size(size: usize) {
