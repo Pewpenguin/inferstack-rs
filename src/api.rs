@@ -115,7 +115,7 @@ pub async fn inference_handler(
             return err.into_response();
         }
         
-        match model_service.infer_with_version(request.input[0].clone(), request.model_version.clone()).await {
+        match model_service.infer_with_version(request.input[0].clone(), request.model_version.as_deref()).await {
             Ok(prediction) => {
                 metrics::record_api_request(endpoint, "success");
                 let response = InferenceResponse { output: vec![prediction] };
@@ -172,7 +172,7 @@ async fn process_batch(
         let version = model_version.clone();
         async move {
             metrics::record_batch_item("started");
-            let result = model_service.infer_with_version(input, version).await
+            let result = model_service.infer_with_version(input, version.as_deref()).await
                 .with_context(|| format!("Failed to process batch item at index {}", idx));
             
             match &result {

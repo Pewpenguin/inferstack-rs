@@ -60,8 +60,12 @@ async fn main() -> Result<()> {
         None
     };
 
+    let model_versions: Vec<(String, String, u8)> = config.model_versions.iter()
+        .map(|v| (v.version.clone(), v.path.clone(), v.traffic_allocation))
+        .collect();
+    
     let model_service = Arc::new(
-        ModelService::new_with_versions(&config.model_versions, config.default_version.clone(), cache_service, config.cache_ttl)
+        ModelService::new_with_versions(model_versions, config.default_version.clone(), cache_service, config.cache_ttl)
             .await
             .context("Failed to initialize model service")?,
     );

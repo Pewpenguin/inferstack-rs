@@ -3,7 +3,6 @@ pub struct ModelVersionConfig {
     pub version: String,
     pub path: String,
     pub traffic_allocation: u8,
-    pub description: Option<String>,
 }
 
 pub struct AppConfig {
@@ -84,17 +83,10 @@ impl AppConfig {
                             0
                         });
                         
-                        let description = if parts.len() > 3 {
-                            Some(parts[3].trim().to_string())
-                        } else {
-                            None
-                        };
-                        
                         Some(ModelVersionConfig {
                             version,
                             path,
                             traffic_allocation,
-                            description,
                         })
                     })
                     .collect()
@@ -104,7 +96,6 @@ impl AppConfig {
                     version: "v1".to_string(),
                     path: model_path.clone(),
                     traffic_allocation: 100,
-                    description: Some("Default model".to_string()),
                 }]
             });
 

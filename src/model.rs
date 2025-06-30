@@ -19,7 +19,6 @@ pub struct ModelVersion {
     pub version: String,
     model: Arc<Mutex<ModelType>>,
     pub traffic_allocation: u8,
-    pub description: Option<String>,
 }
 
 pub struct ModelService {
@@ -34,7 +33,6 @@ impl ModelVersion {
         version: String,
         model_path: &str,
         traffic_allocation: u8,
-        description: Option<String>,
     ) -> AnyhowResult<Self> {
         info!("Loading model version {} from {}", version, model_path);
 
@@ -53,38 +51,13 @@ impl ModelVersion {
             version,
             model: Arc::new(Mutex::new(model)),
             traffic_allocation,
-            description,
         })
     }
 }
 
-impl ModelService {
-    pub async fn new(
-        model_path: &str,
-        cache: Option<Arc<CacheService>>,
-        cache_ttl: Option<usize>,
-    ) -> AnyhowResult<Self> {
-        let version = "v1".to_string();
-        let model_version = ModelVersion::new(
-            version.clone(),
-            model_path,
-            100, 
-            Some("Default model".to_string()),
-        ).await?;
-
-        let mut models = HashMap::new();
-        models.insert(version.clone(), model_version);
-
-        Ok(Self {
-            models,
-            default_version: version,
-            cache,
-            cache_ttl,
-        })
-    }
-    
+impl ModelService {  
     pub async fn new_with_versions(
-        model_configs: Vec<(String, String, u8, Option<String>)>,
+        model_configs: Vec<(String, String, u8)>,
         default_version: Option<String>,
         cache: Option<Arc<CacheService>>,
         cache_ttl: Option<usize>,
@@ -93,19 +66,18 @@ impl ModelService {
             return Err(anyhow::anyhow!("At least one model configuration must be provided"));
         }
         
-        let total_allocation: u16 = model_configs.iter().map(|(_, _, allocation, _)| *allocation as u16).sum();
+        let total_allocation: u16 = model_configs.iter().map(|(_, _, allocation)| *allocation as u16).sum();
         if total_allocation != 100 {
             return Err(anyhow::anyhow!("Traffic allocations must sum to 100%, got {}%", total_allocation));
         }
         
         let mut models = HashMap::new();
         
-        for (version, path, allocation, description) in model_configs.iter() {
+        for (version, path, allocation) in model_configs {
             let model_version = ModelVersion::new(
                 version.clone(),
-                path,
-                *allocation,
-                description.clone(),
+                &path,
+                allocation,
             ).await?;
             
             models.insert(version.clone(), model_version);
@@ -118,7 +90,7 @@ impl ModelService {
                 }
                 version
             },
-            None => model_configs[0].0.clone(), 
+            None => models.keys().next().cloned().unwrap(), 
         };
         
         info!("Loaded {} model versions, default: {}", models.len(), default_version);
@@ -131,7 +103,6 @@ impl ModelService {
         })
     }
 
-    
     pub fn select_model_version(&self, requested_version: Option<&str>) -> Result<&ModelVersion, AppError> {
         if let Some(version) = requested_version {
             return self.models.get(version)
@@ -152,19 +123,7 @@ impl ModelService {
         self.models.get(&self.default_version)
             .ok_or_else(|| AppError::InternalError("Default model version not found".to_string()))
     }
-    
-    pub fn get_model_versions(&self) -> Vec<(&String, &ModelVersion)> {
-        self.models.iter().collect()
-    }
-    
-    pub fn get_model_version(&self, version: &str) -> Option<&ModelVersion> {
-        self.models.get(version)
-    }
-    
-    pub async fn infer(&self, input_data: Vec<f32>) -> AnyhowResult<Vec<f32>> {
-        self.infer_with_version(input_data, None).await
-    }
-    
+
     pub async fn infer_with_version(&self, input_data: Vec<f32>, version: Option<&str>) -> AnyhowResult<Vec<f32>> {
         metrics::record_batch_size(input_data.len());
 
@@ -279,7 +238,7 @@ impl ModelService {
             .context("Failed to create input tensor")?;
 
         let result = model
-            .run(tvec!(input.into_tvalue()))
+            .run(tvec![input.into_tvalue()])
             .context("Failed to run inference")?;
 
         let output = result[0]
