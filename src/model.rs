@@ -29,23 +29,37 @@ pub struct ModelService {
 }
 
 impl ModelVersion {
-    async fn new(
+    pub async fn new(
         version: String,
         model_path: &str,
         traffic_allocation: u8,
     ) -> AnyhowResult<Self> {
         info!("Loading model version {} from {}", version, model_path);
 
+        if !std::path::Path::new(model_path).exists() {
+            return Err(anyhow::anyhow!("Model file not found at path: {}", model_path));
+        }
+
         let model = tract_onnx::onnx()
             .model_for_path(model_path)
-            .context(format!("Failed to load model version {}", version))?;
+            .map_err(|e| {
+                warn!("Failed to load model {}: {}", version, e);
+                anyhow::anyhow!("Failed to load model version {}: {}", version, e)
+            })?;
 
-        let model = model.into_optimized()
-            .context(format!("Failed to optimize model version {}", version))?;
+        info!("Model {} loaded successfully. Optimizing...", version);
 
-        let model = model
-            .into_runnable()
-            .context(format!("Failed to prepare model version {} for running", version))?;
+        let model = model.into_optimized().map_err(|e| {
+            warn!("Failed to optimize model {}: {}", version, e);
+            anyhow::anyhow!("Failed to optimize model version {}: {}", version, e)
+        })?;
+
+        let model = model.into_runnable().map_err(|e| {
+            warn!("Failed to prepare model {} for running: {}", version, e);
+            anyhow::anyhow!("Failed to prepare model version {} for running: {}", version, e)
+        })?;
+
+        info!("Model version {} successfully prepared and ready", version);
 
         Ok(Self {
             version,
@@ -55,7 +69,7 @@ impl ModelVersion {
     }
 }
 
-impl ModelService {  
+impl ModelService {
     pub async fn new_with_versions(
         model_configs: Vec<(String, String, u8)>,
         default_version: Option<String>,
@@ -65,36 +79,30 @@ impl ModelService {
         if model_configs.is_empty() {
             return Err(anyhow::anyhow!("At least one model configuration must be provided"));
         }
-        
+
         let total_allocation: u16 = model_configs.iter().map(|(_, _, allocation)| *allocation as u16).sum();
         if total_allocation != 100 {
             return Err(anyhow::anyhow!("Traffic allocations must sum to 100%, got {}%", total_allocation));
         }
-        
+
         let mut models = HashMap::new();
-        
         for (version, path, allocation) in model_configs {
-            let model_version = ModelVersion::new(
-                version.clone(),
-                &path,
-                allocation,
-            ).await?;
-            
+            let model_version = ModelVersion::new(version.clone(), &path, allocation).await?;
             models.insert(version.clone(), model_version);
         }
-        
+
         let default_version = match default_version {
-            Some(version) => {
-                if !models.contains_key(&version) {
-                    return Err(anyhow::anyhow!("Default version {} not found in model configurations", version));
+            Some(v) => {
+                if !models.contains_key(&v) {
+                    return Err(anyhow::anyhow!("Default version {} not found in model configurations", v));
                 }
-                version
-            },
-            None => models.keys().next().cloned().unwrap(), 
+                v
+            }
+            None => models.keys().next().cloned().unwrap(),
         };
-        
+
         info!("Loaded {} model versions, default: {}", models.len(), default_version);
-        
+
         Ok(Self {
             models,
             default_version,
@@ -108,10 +116,10 @@ impl ModelService {
             return self.models.get(version)
                 .ok_or_else(|| AppError::ValidationError(format!("Model version '{}' not found", version)));
         }
-        
+
         let mut rng = rand::rng();
         let random_value: u8 = rng.random_range(1..=100);
-        
+
         let mut cumulative_allocation = 0;
         for model_version in self.models.values() {
             cumulative_allocation += model_version.traffic_allocation;
@@ -119,31 +127,76 @@ impl ModelService {
                 return Ok(model_version);
             }
         }
-        
+
         self.models.get(&self.default_version)
             .ok_or_else(|| AppError::InternalError("Default model version not found".to_string()))
     }
 
     pub async fn infer_with_version(&self, input_data: Vec<f32>, version: Option<&str>) -> AnyhowResult<Vec<f32>> {
         metrics::record_batch_size(input_data.len());
-
         let timer = Timer::new();
         let mut cached = false;
 
         metrics::record_inference_request("started");
-        
+
         let model_version = match self.select_model_version(version) {
-            Ok(version) => version,
+            Ok(v) => v,
             Err(e) => {
-                metrics::record_inference_request("error");
-                metrics::record_error("model_selection");
-                return Err(anyhow::anyhow!(e));
+                if version.is_some() {
+                    let requested = version.unwrap_or("unknown");
+                    warn!("Requested model version {} not found, falling back to default", requested);
+                    metrics::FALLBACK_COUNTER.with_label_values(&[
+                        requested,
+                        &self.default_version,
+                        "version_not_found"
+                    ]).inc();
+
+                    match self.models.get(&self.default_version) {
+                        Some(default_version) => {
+                            info!("Using fallback model version: {}", default_version.version);
+                            default_version
+                        }
+                        None => {
+                            metrics::record_inference_request("error");
+                            metrics::record_error("model_selection");
+                            return Err(anyhow::anyhow!(e));
+                        }
+                    }
+                } else {
+                    metrics::record_inference_request("error");
+                    metrics::record_error("model_selection");
+                    return Err(anyhow::anyhow!(e));
+                }
             }
         };
-        
+
         metrics::record_model_version_usage(&model_version.version);
 
-        let result = self.infer_with_metrics(model_version, input_data, &mut cached).await;
+        let result = self.infer_with_metrics(model_version, &input_data, &mut cached).await;
+
+        let result = match result {
+            Ok(output) => Ok(output),
+            Err(e) => {
+                warn!("Inference failed with model version {}: {}", model_version.version, e);
+                if model_version.version != self.default_version {
+                    info!("Attempting fallback to default model version: {}", self.default_version);
+                    if let Some(default_version) = self.models.get(&self.default_version) {
+                        metrics::record_model_version_usage(&default_version.version);
+                        let fallback_result = self.infer_with_metrics(default_version, &input_data, &mut cached).await;
+                        if fallback_result.is_ok() {
+                            info!("Fallback to default model version successful");
+                        } else {
+                            warn!("Fallback to default model version also failed");
+                        }
+                        fallback_result
+                    } else {
+                        Err(e)
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        };
 
         metrics::record_inference_latency(timer.elapsed_seconds(), cached);
 
@@ -162,34 +215,65 @@ impl ModelService {
         result
     }
 
+    fn validate_input(&self, _model_version: &ModelVersion, input_data: &[f32]) -> AnyhowResult<()> {
+        if input_data.is_empty() {
+            return Err(anyhow::anyhow!("Input data cannot be empty"));
+        }
+        Ok(())
+    }
+
+    fn preprocess_input(&self, input_data: &[f32]) -> AnyhowResult<Vec<f32>> {
+        let mut processed = input_data.to_vec();
+
+        let needs_normalization = processed.iter().copied().any(|x| x > 1.0 || x < 0.0);
+
+        if needs_normalization {
+            debug!("Normalizing input data to [0,1] range");
+
+            let min_val = processed.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max_val = processed.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let range = max_val - min_val;
+
+            if range > 0.0 {
+                for val in &mut processed {
+                    *val = (*val - min_val) / range;
+                }
+            }
+        }
+
+        Ok(processed)
+    }
+
     async fn infer_with_metrics(
         &self,
         model_version: &ModelVersion,
-        input_data: Vec<f32>,
+        input_data: &[f32],
         cached: &mut bool,
     ) -> AnyhowResult<Vec<f32>> {
+        self.validate_input(model_version, input_data)?;
+
+        let processed_input = self.preprocess_input(input_data)?;
+
         if let Some(cache) = &self.cache {
             let cache_key = CacheService::generate_key_with_version(
                 &format!("inference:{}", model_version.version),
-                &input_data,
+                &processed_input,
                 1
             ).context("Failed to generate cache key")?;
 
             metrics::record_cache_operation("get", "attempt");
 
-            let cache_result = cache.get_with_retry::<Vec<f32>>(&cache_key, 2, 50).await;
-
-            match cache_result {
+            match cache.get_with_retry::<Vec<f32>>(&cache_key, 2, 50).await {
                 Ok(Some(cached_result)) => {
                     debug!("Using cached inference result for version {}", model_version.version);
                     metrics::record_cache_operation("get", "hit");
                     *cached = true;
                     return Ok(cached_result);
-                }
+                },
                 Ok(None) => {
                     metrics::record_cache_operation("get", "miss");
                     debug!("Cache miss for key: {}", cache_key);
-                }
+                },
                 Err(e) => {
                     metrics::record_cache_operation("get", "error");
                     metrics::record_error("cache_get");
@@ -198,20 +282,23 @@ impl ModelService {
             }
 
             let start = Instant::now();
-            let result = self.perform_inference(model_version, input_data.clone()).await?;
+            let result = self.perform_inference(model_version, processed_input.clone()).await?;
             let inference_time = start.elapsed().as_millis();
             debug!("Model inference completed in {} ms for version {}", inference_time, model_version.version);
 
             if inference_time > 5 {
                 metrics::record_cache_operation("set", "attempt");
 
-                match cache
-                    .set_with_retry(&cache_key, &result, self.cache_ttl, 2, 50)
-                    .await
-                {
+                let adaptive_ttl = self.cache_ttl.map(|base_ttl| {
+                    if inference_time > 100 { base_ttl * 2 }
+                    else if inference_time < 10 { base_ttl / 2 }
+                    else { base_ttl }
+                });
+
+                match cache.set_with_retry(&cache_key, &result, adaptive_ttl, 2, 50).await {
                     Ok(_) => {
                         metrics::record_cache_operation("set", "success");
-                        debug!("Successfully cached inference result for version {}", model_version.version);
+                        debug!("Successfully cached inference result for version {} with TTL: {:?}s", model_version.version, adaptive_ttl);
                     }
                     Err(e) => {
                         metrics::record_cache_operation("set", "error");
@@ -219,13 +306,17 @@ impl ModelService {
                         warn!("Cache set error: {}", e);
                     }
                 }
+
+                if inference_time > 100 {
+                    debug!("Would prefetch related inputs for expensive operation ({}ms)", inference_time);
+                }
             } else {
                 debug!("Skipping cache for fast inference ({}ms) for version {}", inference_time, model_version.version);
             }
 
             Ok(result)
         } else {
-            self.perform_inference(model_version, input_data).await
+            self.perform_inference(model_version, processed_input).await
         }
     }
 
@@ -237,13 +328,9 @@ impl ModelService {
         let input = tract_ndarray::Array::from_shape_vec((1, input_data.len()), input_data)
             .context("Failed to create input tensor")?;
 
-        let result = model
-            .run(tvec![input.into_tvalue()])
-            .context("Failed to run inference")?;
+        let result = model.run(tvec![input.into_tvalue()]).context("Failed to run inference")?;
 
-        let output = result[0]
-            .to_array_view::<f32>()
-            .context("Failed to convert output to array")?;
+        let output = result[0].to_array_view::<f32>().context("Failed to convert output to array")?;
 
         metrics::record_model_execution_time_with_version(timer.elapsed_seconds(), &model_version.version);
 

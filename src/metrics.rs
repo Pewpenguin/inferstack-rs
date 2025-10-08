@@ -97,6 +97,34 @@ lazy_static! {
         vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
     )
     .unwrap();
+    
+    pub static ref FALLBACK_COUNTER: CounterVec = register_counter_vec!(
+        "inferstack_fallback_total",
+        "Total number of fallbacks to default model version",
+        &["from_version", "to_version", "reason"]
+    )
+    .unwrap();
+    
+    pub static ref INPUT_VALIDATION_COUNTER: CounterVec = register_counter_vec!(
+        "inferstack_input_validation_total",
+        "Total number of input validation operations",
+        &["result", "reason"]
+    )
+    .unwrap();
+    
+    pub static ref INPUT_PREPROCESSING_COUNTER: CounterVec = register_counter_vec!(
+        "inferstack_input_preprocessing_total",
+        "Total number of input preprocessing operations",
+        &["operation"]
+    )
+    .unwrap();
+    
+    pub static ref SYSTEM_HEALTH: CounterVec = register_counter_vec!(
+        "inferstack_system_health_total",
+        "System health indicators",
+        &["component", "status"]
+    )
+    .unwrap();
 
     pub static ref BATCH_SIZE: HistogramVec = register_histogram_vec!(
         "inferstack_batch_size",
