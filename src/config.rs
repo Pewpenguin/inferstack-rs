@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use anyhow::Result;
+use tracing::{error, info};
 
 pub struct ModelVersionConfig {
     pub version: String,
@@ -6,7 +10,6 @@ pub struct ModelVersionConfig {
 }
 
 pub struct AppConfig {
-    pub model_path: String,
     pub model_versions: Vec<ModelVersionConfig>,
     pub default_version: Option<String>,
     pub port: u16,
@@ -25,7 +28,7 @@ impl AppConfig {
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
 
-        let model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| "model.onnx".to_string());
+        let default_model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| "model.onnx".to_string());
         let port = std::env::var("PORT")
             .unwrap_or_else(|_| "3000".to_string())
             .parse()
@@ -94,13 +97,12 @@ impl AppConfig {
             .unwrap_or_else(|_| {
                 vec![ModelVersionConfig {
                     version: "v1".to_string(),
-                    path: model_path.clone(),
+                    path: default_model_path.clone(),
                     traffic_allocation: 100,
                 }]
             });
 
         Self {
-            model_path,
             model_versions,
             default_version,
             port,
@@ -114,5 +116,35 @@ impl AppConfig {
             rate_limit_cleanup_interval,
             max_batch_size,
         }
+    }
+
+    pub fn validate_model_paths(&self) -> Result<()> {
+        if self.model_versions.is_empty() {
+            error!("No model versions configured; set MODEL_VERSIONS or MODEL_PATH");
+            anyhow::bail!(
+                "No model versions configured; set MODEL_VERSIONS or MODEL_PATH with at least one model"
+            );
+        }
+
+        for mv in &self.model_versions {
+            if !Path::new(&mv.path).exists() {
+                error!(
+                    "Model file not found for version {}: {}",
+                    mv.version,
+                    mv.path
+                );
+                anyhow::bail!(
+                    "Model file not found for version {}: {}",
+                    mv.version,
+                    mv.path
+                );
+            }
+        }
+
+        info!(
+            "Validated {} configured model file(s) on disk",
+            self.model_versions.len()
+        );
+        Ok(())
     }
 }

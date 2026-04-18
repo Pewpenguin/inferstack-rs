@@ -7,7 +7,6 @@ mod middleware;
 mod model;
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::convert::TryInto;
@@ -33,9 +32,9 @@ async fn main() -> Result<()> {
 
     let config = AppConfig::from_env();
 
-    if !Path::new(&config.model_path).exists() {
-        anyhow::bail!("Model file not found: {}", config.model_path);
-    }
+    config
+        .validate_model_paths()
+        .context("Startup aborted: model file validation failed")?;
 
     let cache_service = if let Some(redis_url) = &config.redis_url {
         info!("Initializing Redis cache with URL: {}", redis_url);
