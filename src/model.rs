@@ -14,15 +14,23 @@ use crate::error::AppError;
 use crate::metrics::{self, Timer};
 
 type ModelType = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+pub struct RoutingEntry {
+    pub version: String,
+    #[allow(dead_code)] 
+    pub allocation: u8,
+    pub cumulative_upper: u8,
+}
 
 pub struct ModelVersion {
     pub version: String,
     model: Arc<Mutex<ModelType>>,
+    #[allow(dead_code)]
     pub traffic_allocation: u8,
 }
 
 pub struct ModelService {
     models: HashMap<String, ModelVersion>,
+    routing_table: Vec<RoutingEntry>,
     default_version: String,
     cache: Option<Arc<CacheService>>,
     cache_ttl: Option<usize>,
@@ -85,6 +93,21 @@ impl ModelService {
             return Err(anyhow::anyhow!("Traffic allocations must sum to 100%, got {}%", total_allocation));
         }
 
+        let mut routing_table = Vec::with_capacity(model_configs.len());
+        let mut prev_upper: u8 = 0;
+        for (version, _, allocation) in &model_configs {
+            let cumulative_upper = prev_upper
+                .checked_add(*allocation)
+                .ok_or_else(|| anyhow::anyhow!("Traffic allocation overflow"))?;
+            routing_table.push(RoutingEntry {
+                version: version.clone(),
+                allocation: *allocation,
+                cumulative_upper,
+            });
+            prev_upper = cumulative_upper;
+        }
+        debug_assert_eq!(prev_upper, 100);
+
         let mut models = HashMap::new();
         for (version, path, allocation) in model_configs {
             let model_version = ModelVersion::new(version.clone(), &path, allocation).await?;
@@ -98,13 +121,17 @@ impl ModelService {
                 }
                 v
             }
-            None => models.keys().next().cloned().unwrap(),
+            None => routing_table
+                .first()
+                .map(|e| e.version.clone())
+                .expect("routing_table non-empty when model_configs non-empty"),
         };
 
         info!("Loaded {} model versions, default: {}", models.len(), default_version);
 
         Ok(Self {
             models,
+            routing_table,
             default_version,
             cache,
             cache_ttl,
@@ -118,14 +145,17 @@ impl ModelService {
         }
 
         let mut rng = rand::rng();
-        let random_value: u8 = rng.random_range(1..=100);
+        let r = rng.random_range(0..100);
 
-        let mut cumulative_allocation = 0;
-        for model_version in self.models.values() {
-            cumulative_allocation += model_version.traffic_allocation;
-            if random_value <= cumulative_allocation {
-                return Ok(model_version);
+        let mut prev: u8 = 0;
+        for entry in &self.routing_table {
+            if (prev..entry.cumulative_upper).contains(&r) {
+                return self
+                    .models
+                    .get(&entry.version)
+                    .ok_or_else(|| AppError::InternalError("Routing entry missing loaded model".to_string()));
             }
+            prev = entry.cumulative_upper;
         }
 
         self.models.get(&self.default_version)
