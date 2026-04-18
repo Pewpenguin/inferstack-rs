@@ -42,7 +42,13 @@ async fn main() -> Result<()> {
         let pool_size: u32 = config.redis_pool_size.try_into()
             .context("redis_pool_size does not fit into u32")?;
 
-        info!("Redis connection pool size: {}", pool_size);
+        if pool_size == 0 {
+            anyhow::bail!(
+                "REDIS_POOL_SIZE must be greater than 0 when Redis caching is enabled"
+            );
+        }
+
+        info!("Redis connection pool max_size (REDIS_POOL_SIZE): {}", pool_size);
 
         let service = CacheService::new_with_pool_size(redis_url, pool_size)
             .await

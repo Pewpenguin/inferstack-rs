@@ -162,14 +162,18 @@ impl ModelService {
             .ok_or_else(|| AppError::InternalError("Default model version not found".to_string()))
     }
 
-    pub async fn infer_with_version(&self, input_data: Vec<f32>, version: Option<&str>) -> AnyhowResult<Vec<f32>> {
+    pub async fn infer_with_version(
+        &self,
+        input_data: Vec<f32>,
+        version: Option<&str>,
+    ) -> AnyhowResult<(Vec<f32>, String)> {
         metrics::record_batch_size(input_data.len());
         let timer = Timer::new();
         let mut cached = false;
 
         metrics::record_inference_request("started");
 
-        let model_version = match self.select_model_version(version) {
+        let model_version: &ModelVersion = match self.select_model_version(version) {
             Ok(v) => v,
             Err(e) => {
                 if version.is_some() {
@@ -200,49 +204,49 @@ impl ModelService {
             }
         };
 
-        metrics::record_model_version_usage(&model_version.version);
-
-        let result = self.infer_with_metrics(model_version, &input_data, &mut cached).await;
-
-        let result = match result {
-            Ok(output) => Ok(output),
+        let (result, executed_version) = match self.infer_with_metrics(model_version, &input_data, &mut cached).await {
+            Ok(output) => (Ok(output), model_version.version.clone()),
             Err(e) => {
                 warn!("Inference failed with model version {}: {}", model_version.version, e);
                 if model_version.version != self.default_version {
                     info!("Attempting fallback to default model version: {}", self.default_version);
                     if let Some(default_version) = self.models.get(&self.default_version) {
-                        metrics::record_model_version_usage(&default_version.version);
                         let fallback_result = self.infer_with_metrics(default_version, &input_data, &mut cached).await;
-                        if fallback_result.is_ok() {
-                            info!("Fallback to default model version successful");
-                        } else {
-                            warn!("Fallback to default model version also failed");
+                        match fallback_result {
+                            Ok(output) => {
+                                info!("Fallback to default model version successful");
+                                (Ok(output), default_version.version.clone())
+                            }
+                            Err(e2) => {
+                                warn!("Fallback to default model version also failed");
+                                (Err(e2), default_version.version.clone())
+                            }
                         }
-                        fallback_result
                     } else {
-                        Err(e)
+                        (Err(e), model_version.version.clone())
                     }
                 } else {
-                    Err(e)
+                    (Err(e), model_version.version.clone())
                 }
             }
         };
 
-        metrics::record_inference_latency(timer.elapsed_seconds(), cached);
+        metrics::record_inference_latency(timer.elapsed_seconds(), cached, &executed_version);
 
         match &result {
             Ok(_) => {
                 metrics::record_inference_request("success");
-                metrics::record_model_version_success(&model_version.version);
-            },
+                metrics::record_model_version_usage(&executed_version);
+                metrics::record_model_version_success(&executed_version);
+            }
             Err(_) => {
                 metrics::record_inference_request("error");
                 metrics::record_error("inference");
-                metrics::record_model_version_error(&model_version.version);
+                metrics::record_model_version_error(&executed_version);
             }
         }
 
-        result
+        result.map(|values| (values, executed_version))
     }
 
     fn validate_input(&self, _model_version: &ModelVersion, input_data: &[f32]) -> AnyhowResult<()> {

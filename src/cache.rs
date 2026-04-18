@@ -1,10 +1,10 @@
 use anyhow::{Context, Result as AnyhowResult};
 use deadpool_redis::redis::{cmd, AsyncCommands};
-use deadpool_redis::{Config, Pool, Runtime};
+use deadpool_redis::{Config, Pool, PoolConfig, Runtime};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 
 
 pub struct CacheService {
@@ -12,11 +12,23 @@ pub struct CacheService {
 }
 
 impl CacheService {
-    
     pub async fn new_with_pool_size(redis_url: &str, pool_size: u32) -> AnyhowResult<Self> {
-        let cfg = Config::from_url(redis_url);
+        if pool_size == 0 {
+            anyhow::bail!(
+                "Redis pool size must be greater than 0; set REDIS_POOL_SIZE to a positive integer"
+            );
+        }
+        let max_size = usize::try_from(pool_size)
+            .map_err(|_| anyhow::anyhow!("Redis pool size does not fit in usize"))?;
+
+        let mut cfg = Config::from_url(redis_url);
+        cfg.pool = Some(PoolConfig::new(max_size));
+
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
-        debug!("Initialized Redis connection pool with size: {}", pool_size);
+        info!(
+            "Initialized Redis connection pool with max_size={} (REDIS_POOL_SIZE)",
+            max_size
+        );
         Ok(Self { pool })
     }
     

@@ -68,8 +68,8 @@ lazy_static! {
 
     pub static ref INFERENCE_LATENCY: HistogramVec = register_histogram_vec!(
         "inferstack_inference_duration_seconds",
-        "Inference request duration in seconds",
-        &["cached"],
+        "Inference request duration in seconds (by model version that produced the outcome)",
+        &["version", "cached"],
         vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
     )
     .unwrap();
@@ -178,9 +178,11 @@ pub fn record_cache_operation(operation: &str, result: &str) {
     CACHE_COUNTER.with_label_values(&[operation, result]).inc();
 }
 
-pub fn record_inference_latency(duration: f64, cached: bool) {
+pub fn record_inference_latency(duration: f64, cached: bool, version: &str) {
     let cached_str = if cached { "true" } else { "false" };
-    INFERENCE_LATENCY.with_label_values(&[cached_str]).observe(duration);
+    INFERENCE_LATENCY
+        .with_label_values(&[version, cached_str])
+        .observe(duration);
 }
 
 pub fn record_api_latency(endpoint: &str, duration: f64) {
