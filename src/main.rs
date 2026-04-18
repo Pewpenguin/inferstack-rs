@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     dotenv().ok();
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let config = AppConfig::from_env();
+    let config = AppConfig::from_env().context("Invalid application configuration")?;
 
     config
         .validate_model_paths()
@@ -70,7 +70,13 @@ async fn main() -> Result<()> {
         .collect();
     
     let model_service = Arc::new(
-        ModelService::new_with_versions(model_versions, config.default_version.clone(), cache_service, config.cache_ttl)
+        ModelService::new_with_versions(
+            model_versions,
+            config.default_version.clone(),
+            cache_service,
+            config.cache_ttl,
+            config.normalize_input,
+        )
             .await
             .context("Failed to initialize model service")?,
     );

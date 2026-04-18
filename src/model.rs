@@ -10,6 +10,7 @@ use tract_core::prelude::*;
 use tract_onnx::prelude::*;
 
 use crate::cache::CacheService;
+use crate::config::NormalizeInput;
 use crate::error::AppError;
 use crate::metrics::{self, Timer};
 
@@ -34,6 +35,7 @@ pub struct ModelService {
     default_version: String,
     cache: Option<Arc<CacheService>>,
     cache_ttl: Option<usize>,
+    normalize_input: NormalizeInput,
 }
 
 impl ModelVersion {
@@ -83,6 +85,7 @@ impl ModelService {
         default_version: Option<String>,
         cache: Option<Arc<CacheService>>,
         cache_ttl: Option<usize>,
+        normalize_input: NormalizeInput,
     ) -> AnyhowResult<Self> {
         if model_configs.is_empty() {
             return Err(anyhow::anyhow!("At least one model configuration must be provided"));
@@ -135,6 +138,7 @@ impl ModelService {
             default_version,
             cache,
             cache_ttl,
+            normalize_input,
         })
     }
 
@@ -257,25 +261,32 @@ impl ModelService {
     }
 
     fn preprocess_input(&self, input_data: &[f32]) -> AnyhowResult<Vec<f32>> {
-        let mut processed = input_data.to_vec();
+        match self.normalize_input {
+            NormalizeInput::None => Ok(input_data.to_vec()),
+            NormalizeInput::MinMax => {
+                // Opt-in only: legacy behavior scaled inputs when any component was outside [0,1].
+                // That silently changed semantics; callers who need scaling must set NORMALIZE_INPUT=minmax.
+                let mut processed = input_data.to_vec();
 
-        let needs_normalization = processed.iter().copied().any(|x| x > 1.0 || x < 0.0);
+                let needs_normalization = processed.iter().copied().any(|x| x > 1.0 || x < 0.0);
 
-        if needs_normalization {
-            debug!("Normalizing input data to [0,1] range");
+                if needs_normalization {
+                    debug!("Min–max normalizing input data to [0,1] range (NORMALIZE_INPUT=minmax)");
 
-            let min_val = processed.iter().cloned().fold(f32::INFINITY, f32::min);
-            let max_val = processed.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let range = max_val - min_val;
+                    let min_val = processed.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max_val = processed.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let range = max_val - min_val;
 
-            if range > 0.0 {
-                for val in &mut processed {
-                    *val = (*val - min_val) / range;
+                    if range > 0.0 {
+                        for val in &mut processed {
+                            *val = (*val - min_val) / range;
+                        }
+                    }
                 }
+
+                Ok(processed)
             }
         }
-
-        Ok(processed)
     }
 
     async fn infer_with_metrics(

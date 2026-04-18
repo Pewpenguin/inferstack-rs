@@ -1,7 +1,36 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::Result;
 use tracing::{error, info};
+
+/// How (if at all) to preprocess raw input vectors before they are fed to ONNX.
+///
+/// Previously the server **always** applied min–max normalization whenever any value fell
+/// outside `[0, 1]`, which changed inputs without the caller’s knowledge. That behavior is now
+/// opt-in via [`NormalizeInput::MinMax`]; the default is [`NormalizeInput::None`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormalizeInput {
+    /// Pass inputs through unchanged (default).
+    None,
+    /// Apply per-request min–max scaling into `[0, 1]` when any component is outside `[0, 1]`.
+    MinMax,
+}
+
+impl FromStr for NormalizeInput {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "minmax" => Ok(Self::MinMax),
+            other => anyhow::bail!(
+                "NORMALIZE_INPUT must be 'none' or 'minmax', got: {:?}",
+                other
+            ),
+        }
+    }
+}
 
 pub struct ModelVersionConfig {
     pub version: String,
@@ -22,10 +51,11 @@ pub struct AppConfig {
     pub redis_pool_size: usize,
     pub rate_limit_cleanup_interval: u64,
     pub max_batch_size: usize,
+    pub normalize_input: NormalizeInput,
 }
 
 impl AppConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok();
 
         let default_model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| "model.onnx".to_string());
@@ -65,6 +95,13 @@ impl AppConfig {
             .unwrap_or_else(|_| "32".to_string())
             .parse()
             .unwrap_or(32);
+
+        // Default: none — do not alter client-supplied tensors (see [`NormalizeInput`]).
+        let normalize_input = match std::env::var("NORMALIZE_INPUT") {
+            Ok(s) if s.trim().is_empty() => NormalizeInput::None,
+            Ok(s) => s.parse()?,
+            Err(_) => NormalizeInput::None,
+        };
         
         let default_version = std::env::var("DEFAULT_MODEL_VERSION").ok();
         
@@ -102,7 +139,7 @@ impl AppConfig {
                 }]
             });
 
-        Self {
+        Ok(Self {
             model_versions,
             default_version,
             port,
@@ -115,7 +152,8 @@ impl AppConfig {
             redis_pool_size,
             rate_limit_cleanup_interval,
             max_batch_size,
-        }
+            normalize_input,
+        })
     }
 
     pub fn validate_model_paths(&self) -> Result<()> {
