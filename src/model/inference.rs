@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use anyhow::{Context, Result as AnyhowResult};
 use tracing::{debug, warn};
 use tract_onnx::prelude::*;
 
 use crate::cache::CacheService;
+use crate::error::AppError;
 use crate::metrics::{self, Timer};
 
 use super::{ModelService, ModelVersion};
@@ -15,7 +15,7 @@ impl ModelService {
         model_version: &ModelVersion,
         input_data: &[f32],
         cached: &mut bool,
-    ) -> AnyhowResult<Vec<f32>> {
+    ) -> Result<Vec<f32>, AppError> {
         self.validate_input(model_version, input_data)?;
 
         let processed_input = self.preprocess_input(input_data)?;
@@ -26,7 +26,7 @@ impl ModelService {
                 &processed_input,
                 1,
             )
-            .context("Failed to generate cache key")?;
+            .map_err(|e| AppError::CacheError(format!("Failed to generate cache key: {}", e)))?;
 
             metrics::record_cache_operation("get", "attempt");
 
@@ -121,21 +121,23 @@ impl ModelService {
         &self,
         model_version: &ModelVersion,
         input_data: Vec<f32>,
-    ) -> AnyhowResult<Vec<f32>> {
+    ) -> Result<Vec<f32>, AppError> {
         let timer = Timer::new();
 
         let model = model_version.model.lock().await;
 
         let input = tract_ndarray::Array::from_shape_vec((1, input_data.len()), input_data)
-            .context("Failed to create input tensor")?;
+            .map_err(|e| {
+                AppError::InferenceError(format!("Failed to create input tensor: {}", e))
+            })?;
 
         let result = model
             .run(tvec![input.into_tvalue()])
-            .context("Failed to run inference")?;
+            .map_err(|e| AppError::InferenceError(format!("Failed to run inference: {}", e)))?;
 
-        let output = result[0]
-            .to_array_view::<f32>()
-            .context("Failed to convert output to array")?;
+        let output = result[0].to_array_view::<f32>().map_err(|e| {
+            AppError::InferenceError(format!("Failed to convert output to array: {}", e))
+        })?;
 
         metrics::record_model_execution_time_with_version(
             timer.elapsed_seconds(),

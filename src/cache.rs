@@ -1,4 +1,3 @@
-use anyhow::{Context, Result as AnyhowResult};
 use deadpool_redis::redis::{cmd, AsyncCommands};
 use deadpool_redis::{Config, Pool, PoolConfig, Runtime};
 use serde::{de::DeserializeOwned, Serialize};
@@ -6,24 +5,30 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tracing::{debug, info};
 
+use crate::error::AppError;
+
 pub struct CacheService {
     pool: Pool,
 }
 
 impl CacheService {
-    pub async fn new_with_pool_size(redis_url: &str, pool_size: u32) -> AnyhowResult<Self> {
+    pub async fn new_with_pool_size(redis_url: &str, pool_size: u32) -> Result<Self, AppError> {
         if pool_size == 0 {
-            anyhow::bail!(
+            return Err(AppError::ConfigError(
                 "Redis pool size must be greater than 0; set REDIS_POOL_SIZE to a positive integer"
-            );
+                    .to_string(),
+            ));
         }
-        let max_size = usize::try_from(pool_size)
-            .map_err(|_| anyhow::anyhow!("Redis pool size does not fit in usize"))?;
+        let max_size = usize::try_from(pool_size).map_err(|_| {
+            AppError::ConfigError("Redis pool size does not fit in usize".to_string())
+        })?;
 
         let mut cfg = Config::from_url(redis_url);
         cfg.pool = Some(PoolConfig::new(max_size));
 
-        let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
+        let pool = cfg.create_pool(Some(Runtime::Tokio1)).map_err(|e| {
+            AppError::CacheError(format!("Failed to create Redis connection pool: {}", e))
+        })?;
         info!(
             "Initialized Redis connection pool with max_size={} (REDIS_POOL_SIZE)",
             max_size
@@ -31,16 +36,14 @@ impl CacheService {
         Ok(Self { pool })
     }
 
-    pub async fn health_check(&self) -> AnyhowResult<()> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .context("Failed to get Redis connection from pool")?;
+    pub async fn health_check(&self) -> Result<(), AppError> {
+        let mut conn = self.pool.get().await.map_err(|e| {
+            AppError::CacheError(format!("Failed to get Redis connection from pool: {}", e))
+        })?;
         cmd("PING")
             .query_async::<()>(&mut conn)
             .await
-            .context("Redis health check failed")?;
+            .map_err(|e| AppError::CacheError(format!("Redis health check failed: {}", e)))?;
         Ok(())
     }
 
@@ -49,7 +52,7 @@ impl CacheService {
         key: &str,
         retries: u32,
         retry_delay_ms: u64,
-    ) -> AnyhowResult<Option<T>> {
+    ) -> Result<Option<T>, AppError> {
         let mut attempts = 0;
         let max_attempts = retries + 1;
 
@@ -78,7 +81,7 @@ impl CacheService {
         ttl_seconds: Option<usize>,
         retries: u32,
         retry_delay_ms: u64,
-    ) -> AnyhowResult<()> {
+    ) -> Result<(), AppError> {
         let mut attempts = 0;
         let max_attempts = retries + 1;
 
@@ -100,22 +103,21 @@ impl CacheService {
         }
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> AnyhowResult<Option<T>> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .context("Failed to get Redis connection from pool")?;
+    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, AppError> {
+        let mut conn = self.pool.get().await.map_err(|e| {
+            AppError::CacheError(format!("Failed to get Redis connection from pool: {}", e))
+        })?;
 
         let result: Option<String> = conn
             .get(key)
             .await
-            .context("Failed to get value from Redis")?;
+            .map_err(|e| AppError::CacheError(format!("Failed to get value from Redis: {}", e)))?;
 
         match result {
             Some(data) => {
-                let value: T =
-                    serde_json::from_str(&data).context("Failed to deserialize cached data")?;
+                let value: T = serde_json::from_str(&data).map_err(|e| {
+                    AppError::CacheError(format!("Failed to deserialize cached data: {}", e))
+                })?;
                 debug!("Cache hit for key: {}", key);
                 Ok(Some(value))
             }
@@ -131,15 +133,14 @@ impl CacheService {
         key: &str,
         value: &T,
         ttl_seconds: Option<usize>,
-    ) -> AnyhowResult<()> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .context("Failed to get Redis connection from pool")?;
+    ) -> Result<(), AppError> {
+        let mut conn = self.pool.get().await.map_err(|e| {
+            AppError::CacheError(format!("Failed to get Redis connection from pool: {}", e))
+        })?;
 
-        let serialized =
-            serde_json::to_string(value).context("Failed to serialize value for caching")?;
+        let serialized = serde_json::to_string(value).map_err(|e| {
+            AppError::CacheError(format!("Failed to serialize value for caching: {}", e))
+        })?;
 
         match ttl_seconds {
             Some(ttl) => {
@@ -149,7 +150,12 @@ impl CacheService {
                     .arg(&serialized)
                     .query_async(&mut conn)
                     .await
-                    .context("Failed to set value in Redis with expiry")?;
+                    .map_err(|e| {
+                        AppError::CacheError(format!(
+                            "Failed to set value in Redis with expiry: {}",
+                            e
+                        ))
+                    })?;
             }
             None => {
                 let _: () = cmd("SET")
@@ -157,7 +163,9 @@ impl CacheService {
                     .arg(&serialized)
                     .query_async(&mut conn)
                     .await
-                    .context("Failed to set value in Redis")?;
+                    .map_err(|e| {
+                        AppError::CacheError(format!("Failed to set value in Redis: {}", e))
+                    })?;
             }
         }
 
@@ -169,9 +177,13 @@ impl CacheService {
         prefix: &str,
         data: &T,
         version: u32,
-    ) -> AnyhowResult<String> {
-        let serialized =
-            serde_json::to_string(data).context("Failed to serialize data for key generation")?;
+    ) -> Result<String, AppError> {
+        let serialized = serde_json::to_string(data).map_err(|e| {
+            AppError::CacheError(format!(
+                "Failed to serialize data for key generation: {}",
+                e
+            ))
+        })?;
 
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());

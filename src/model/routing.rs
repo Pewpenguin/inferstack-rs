@@ -20,7 +20,7 @@ impl ModelService {
     ) -> Result<&ModelVersion, AppError> {
         if let Some(version) = requested_version {
             return self.models.get(version).ok_or_else(|| {
-                AppError::ValidationError(format!("Model version '{}' not found", version))
+                AppError::NotFound(format!("Model version '{}' not found", version))
             });
         }
 

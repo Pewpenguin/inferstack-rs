@@ -1,7 +1,7 @@
-use anyhow::Result as AnyhowResult;
 use tracing::debug;
 
 use crate::config::NormalizeInput;
+use crate::error::AppError;
 
 use super::{ModelService, ModelVersion};
 
@@ -10,14 +10,16 @@ impl ModelService {
         &self,
         _model_version: &ModelVersion,
         input_data: &[f32],
-    ) -> AnyhowResult<()> {
+    ) -> Result<(), AppError> {
         if input_data.is_empty() {
-            return Err(anyhow::anyhow!("Input data cannot be empty"));
+            return Err(AppError::ValidationError(
+                "Input data cannot be empty".to_string(),
+            ));
         }
         Ok(())
     }
 
-    pub(super) fn preprocess_input(&self, input_data: &[f32]) -> AnyhowResult<Vec<f32>> {
+    pub(super) fn preprocess_input(&self, input_data: &[f32]) -> Result<Vec<f32>, AppError> {
         match self.normalize_input {
             NormalizeInput::None => Ok(input_data.to_vec()),
             NormalizeInput::MinMax => {

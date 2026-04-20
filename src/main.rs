@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
 
         let service = CacheService::new_with_pool_size(redis_url, pool_size)
             .await
-            .context("Failed to initialize cache service")?;
+            .map_err(|e| anyhow::anyhow!("Failed to initialize cache service: {}", e))?;
 
         match service.health_check().await {
             Ok(_) => info!("Redis connection health check successful"),
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
             config.min_inference_ms_for_cache,
         )
         .await
-        .context("Failed to initialize model service")?,
+        .map_err(|e| anyhow::anyhow!("Failed to initialize model service: {}", e))?,
     );
 
     let rate_limiter = Arc::new(RateLimiter::new(

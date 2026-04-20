@@ -147,9 +147,7 @@ pub async fn inference_handler(
                 metrics::record_api_request(endpoint, "error");
                 metrics::record_error("api_inference");
                 error!("Inference error: {}", e);
-
-                let app_error = AppError::InferenceError(e.to_string());
-                app_error.into_response()
+                e.into_response()
             }
         }
     } else {
@@ -165,9 +163,7 @@ pub async fn inference_handler(
                 metrics::record_api_request(endpoint, "error");
                 metrics::record_error("api_batch_inference");
                 error!("Batch inference error: {}", e);
-
-                let app_error = AppError::InferenceError(e.to_string());
-                app_error.into_response()
+                e.into_response()
             }
         }
     };
@@ -181,8 +177,7 @@ async fn process_batch(
     model_service: &Arc<ModelService>,
     inputs: Vec<Vec<f32>>,
     model_version: Option<String>,
-) -> anyhow::Result<Vec<Vec<f32>>> {
-    use anyhow::Context;
+) -> Result<Vec<Vec<f32>>, AppError> {
     use futures::future;
 
     let batch_size = inputs.len();
@@ -200,7 +195,12 @@ async fn process_batch(
                 .infer_with_version(input, version.as_deref())
                 .await
                 .map(|(values, _)| values)
-                .with_context(|| format!("Failed to process batch item at index {}", idx));
+                .map_err(|e| {
+                    AppError::InferenceError(format!(
+                        "Failed to process batch item at index {}: {}",
+                        idx, e
+                    ))
+                });
 
             match &result {
                 Ok(_) => metrics::record_batch_item("success"),

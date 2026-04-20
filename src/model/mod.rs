@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use anyhow::Result as AnyhowResult;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 use tract_core::prelude::*;
@@ -8,6 +7,7 @@ use tract_onnx::prelude::*;
 
 use crate::cache::CacheService;
 use crate::config::NormalizeInput;
+use crate::error::AppError;
 use crate::metrics::{self, Timer};
 
 mod inference;
@@ -45,35 +45,37 @@ impl ModelVersion {
         version: String,
         model_path: &str,
         traffic_allocation: u8,
-    ) -> AnyhowResult<Self> {
+    ) -> Result<Self, AppError> {
         info!("Loading model version {} from {}", version, model_path);
 
         if !std::path::Path::new(model_path).exists() {
-            return Err(anyhow::anyhow!(
+            return Err(AppError::ModelLoadError(format!(
                 "Model file not found at path: {}",
                 model_path
-            ));
+            )));
         }
 
         let model = tract_onnx::onnx().model_for_path(model_path).map_err(|e| {
             warn!("Failed to load model {}: {}", version, e);
-            anyhow::anyhow!("Failed to load model version {}: {}", version, e)
+            AppError::ModelLoadError(format!("Failed to load model version {}: {}", version, e))
         })?;
 
         info!("Model {} loaded successfully. Optimizing...", version);
 
         let model = model.into_optimized().map_err(|e| {
             warn!("Failed to optimize model {}: {}", version, e);
-            anyhow::anyhow!("Failed to optimize model version {}: {}", version, e)
+            AppError::ModelLoadError(format!(
+                "Failed to optimize model version {}: {}",
+                version, e
+            ))
         })?;
 
         let model = model.into_runnable().map_err(|e| {
             warn!("Failed to prepare model {} for running: {}", version, e);
-            anyhow::anyhow!(
+            AppError::ModelLoadError(format!(
                 "Failed to prepare model version {} for running: {}",
-                version,
-                e
-            )
+                version, e
+            ))
         })?;
 
         info!("Model version {} successfully prepared and ready", version);
@@ -94,10 +96,10 @@ impl ModelService {
         cache_ttl: Option<usize>,
         normalize_input: NormalizeInput,
         min_inference_ms_for_cache: u64,
-    ) -> AnyhowResult<Self> {
+    ) -> Result<Self, AppError> {
         if model_configs.is_empty() {
-            return Err(anyhow::anyhow!(
-                "At least one model configuration must be provided"
+            return Err(AppError::ConfigError(
+                "At least one model configuration must be provided".to_string(),
             ));
         }
 
@@ -106,10 +108,10 @@ impl ModelService {
             .map(|(_, _, allocation)| *allocation as u16)
             .sum();
         if total_allocation != 100 {
-            return Err(anyhow::anyhow!(
+            return Err(AppError::ConfigError(format!(
                 "Traffic allocations must sum to 100%, got {}%",
                 total_allocation
-            ));
+            )));
         }
 
         let mut routing_table = Vec::with_capacity(model_configs.len());
@@ -117,7 +119,7 @@ impl ModelService {
         for (version, _, allocation) in &model_configs {
             let cumulative_upper = prev_upper
                 .checked_add(*allocation)
-                .ok_or_else(|| anyhow::anyhow!("Traffic allocation overflow"))?;
+                .ok_or_else(|| AppError::ConfigError("Traffic allocation overflow".to_string()))?;
             routing_table.push(RoutingEntry {
                 version: version.clone(),
                 allocation: *allocation,
@@ -136,10 +138,10 @@ impl ModelService {
         let default_version = match default_version {
             Some(v) => {
                 if !models.contains_key(&v) {
-                    return Err(anyhow::anyhow!(
+                    return Err(AppError::ConfigError(format!(
                         "Default version {} not found in model configurations",
                         v
-                    ));
+                    )));
                 }
                 v
             }
@@ -170,7 +172,7 @@ impl ModelService {
         &self,
         input_data: Vec<f32>,
         version: Option<&str>,
-    ) -> AnyhowResult<(Vec<f32>, String)> {
+    ) -> Result<(Vec<f32>, String), AppError> {
         metrics::record_batch_size(input_data.len());
         let timer = Timer::new();
         let mut cached = false;
@@ -183,11 +185,11 @@ impl ModelService {
                 if version.is_some() {
                     metrics::record_inference_request("error");
                     metrics::record_error("model_selection");
-                    return Err(anyhow::anyhow!(e));
+                    return Err(e);
                 }
                 metrics::record_inference_request("error");
                 metrics::record_error("model_selection");
-                return Err(anyhow::anyhow!(e));
+                return Err(e);
             }
         };
 
