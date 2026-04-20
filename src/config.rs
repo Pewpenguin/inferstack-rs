@@ -248,6 +248,7 @@ impl AppConfig {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn test_with_models(
         model_versions: Vec<ModelVersionConfig>,
         default_version: Option<String>,

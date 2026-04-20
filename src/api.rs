@@ -283,10 +283,11 @@ async fn process_batch(
 
 pub async fn batch_inference_handler(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(mut request): Json<InferenceRequest>,
 ) -> impl IntoResponse {
     request.batch = true;
-    inference_handler(State(state), HeaderMap::new(), Json(request)).await
+    inference_handler(State(state), headers, Json(request)).await
 }
 
 pub mod routes {

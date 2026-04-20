@@ -36,7 +36,7 @@ impl RateLimiter {
         let window_start = now - self.window_duration;
 
         let mut requests = self.requests.lock().unwrap();
-        let timestamps = requests.entry(*ip).or_insert_with(Vec::new);
+        let timestamps = requests.entry(*ip).or_default();
 
         timestamps.retain(|&timestamp| timestamp >= window_start);
 

@@ -18,6 +18,12 @@ impl Timer {
     }
 }
 
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn record_inference_request(status: &str) {
     counter!("inferstack_inference_total", "status" => status.to_string()).increment(1);
 }

@@ -25,7 +25,8 @@ impl ModelService {
             NormalizeInput::MinMax => {
                 let mut processed = input_data.to_vec();
 
-                let needs_normalization = processed.iter().copied().any(|x| x > 1.0 || x < 0.0);
+                let needs_normalization =
+                    processed.iter().copied().any(|x| !(0.0..=1.0).contains(&x));
 
                 if needs_normalization {
                     debug!(
