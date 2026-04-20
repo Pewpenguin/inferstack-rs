@@ -1,11 +1,3 @@
-mod api;
-mod cache;
-mod config;
-mod error;
-mod metrics;
-mod middleware;
-mod model;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,11 +11,11 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn, Level};
 
-use crate::middleware::RateLimiter;
-use crate::api::routes;
-use crate::cache::CacheService;
-use crate::config::AppConfig;
-use crate::model::ModelService;
+use inferstack_rs::api::routes;
+use inferstack_rs::cache::CacheService;
+use inferstack_rs::config::AppConfig;
+use inferstack_rs::middleware::RateLimiter;
+use inferstack_rs::model::ModelService;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -76,6 +68,7 @@ async fn main() -> Result<()> {
             cache_service,
             config.cache_ttl,
             config.normalize_input,
+            config.min_inference_ms_for_cache,
         )
             .await
             .context("Failed to initialize model service")?,
@@ -107,7 +100,7 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter.clone(),
-            middleware::rate_limit,
+            inferstack_rs::middleware::rate_limit,
         ));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], shared_config.port));

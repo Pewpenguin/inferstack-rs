@@ -4,16 +4,9 @@ use std::str::FromStr;
 use anyhow::Result;
 use tracing::{error, info};
 
-/// How (if at all) to preprocess raw input vectors before they are fed to ONNX.
-///
-/// Previously the server **always** applied min–max normalization whenever any value fell
-/// outside `[0, 1]`, which changed inputs without the caller’s knowledge. That behavior is now
-/// opt-in via [`NormalizeInput::MinMax`]; the default is [`NormalizeInput::None`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NormalizeInput {
-    /// Pass inputs through unchanged (default).
     None,
-    /// Apply per-request min–max scaling into `[0, 1]` when any component is outside `[0, 1]`.
     MinMax,
 }
 
@@ -52,6 +45,7 @@ pub struct AppConfig {
     pub rate_limit_cleanup_interval: u64,
     pub max_batch_size: usize,
     pub normalize_input: NormalizeInput,
+    pub min_inference_ms_for_cache: u64,
 }
 
 impl AppConfig {
@@ -95,8 +89,11 @@ impl AppConfig {
             .unwrap_or_else(|_| "32".to_string())
             .parse()
             .unwrap_or(32);
+        let min_inference_ms_for_cache = std::env::var("MIN_INFERENCE_MS_FOR_CACHE")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse()
+            .unwrap_or(5);
 
-        // Default: none — do not alter client-supplied tensors (see [`NormalizeInput`]).
         let normalize_input = match std::env::var("NORMALIZE_INPUT") {
             Ok(s) if s.trim().is_empty() => NormalizeInput::None,
             Ok(s) => s.parse()?,
@@ -153,7 +150,36 @@ impl AppConfig {
             rate_limit_cleanup_interval,
             max_batch_size,
             normalize_input,
+            min_inference_ms_for_cache,
         })
+    }
+
+    pub fn test_with_models(
+        model_versions: Vec<ModelVersionConfig>,
+        default_version: Option<String>,
+        redis_url: Option<String>,
+        cache_ttl: Option<usize>,
+        min_inference_ms_for_cache: u64,
+        normalize_input: NormalizeInput,
+        min_input_size: usize,
+        max_input_size: usize,
+    ) -> Self {
+        Self {
+            model_versions,
+            default_version,
+            port: 3000,
+            redis_url,
+            cache_ttl,
+            rate_limit_requests: 10_000,
+            rate_limit_window_secs: 60,
+            max_input_size,
+            min_input_size,
+            redis_pool_size: 5,
+            rate_limit_cleanup_interval: 60,
+            max_batch_size: 32,
+            normalize_input,
+            min_inference_ms_for_cache,
+        }
     }
 
     pub fn validate_model_paths(&self) -> Result<()> {

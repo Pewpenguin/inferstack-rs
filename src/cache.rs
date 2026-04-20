@@ -166,7 +166,7 @@ impl CacheService {
         hasher.update(version.to_string().as_bytes());
         let hash = hasher.finalize();
 
-        let hash_hex = format!("{:x}", hash);
+        let hash_hex: String = hash.iter().map(|byte| format!("{:02x}", byte)).collect();
         let key = format!("{}_v{}{}", prefix, version, hash_hex);
 
         debug!("Generated versioned key: {}", key);

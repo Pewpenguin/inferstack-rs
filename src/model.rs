@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result as AnyhowResult};
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use tract_core::prelude::*;
@@ -36,6 +36,7 @@ pub struct ModelService {
     cache: Option<Arc<CacheService>>,
     cache_ttl: Option<usize>,
     normalize_input: NormalizeInput,
+    min_inference_ms_for_cache: u64,
 }
 
 impl ModelVersion {
@@ -86,6 +87,7 @@ impl ModelService {
         cache: Option<Arc<CacheService>>,
         cache_ttl: Option<usize>,
         normalize_input: NormalizeInput,
+        min_inference_ms_for_cache: u64,
     ) -> AnyhowResult<Self> {
         if model_configs.is_empty() {
             return Err(anyhow::anyhow!("At least one model configuration must be provided"));
@@ -139,17 +141,28 @@ impl ModelService {
             cache,
             cache_ttl,
             normalize_input,
+            min_inference_ms_for_cache,
         })
     }
 
     pub fn select_model_version(&self, requested_version: Option<&str>) -> Result<&ModelVersion, AppError> {
+        let r = rand::rng().random_range(0..100);
+        self.select_model_version_with_roll(requested_version, r)
+    }
+
+    pub fn select_model_version_with_roll(
+        &self,
+        requested_version: Option<&str>,
+        routing_roll: u8,
+    ) -> Result<&ModelVersion, AppError> {
         if let Some(version) = requested_version {
-            return self.models.get(version)
+            return self
+                .models
+                .get(version)
                 .ok_or_else(|| AppError::ValidationError(format!("Model version '{}' not found", version)));
         }
 
-        let mut rng = rand::rng();
-        let r = rng.random_range(0..100);
+        let r = routing_roll;
 
         let mut prev: u8 = 0;
         for entry in &self.routing_table {
@@ -162,7 +175,8 @@ impl ModelService {
             prev = entry.cumulative_upper;
         }
 
-        self.models.get(&self.default_version)
+        self.models
+            .get(&self.default_version)
             .ok_or_else(|| AppError::InternalError("Default model version not found".to_string()))
     }
 
@@ -181,30 +195,13 @@ impl ModelService {
             Ok(v) => v,
             Err(e) => {
                 if version.is_some() {
-                    let requested = version.unwrap_or("unknown");
-                    warn!("Requested model version {} not found, falling back to default", requested);
-                    metrics::FALLBACK_COUNTER.with_label_values(&[
-                        requested,
-                        &self.default_version,
-                        "version_not_found"
-                    ]).inc();
-
-                    match self.models.get(&self.default_version) {
-                        Some(default_version) => {
-                            info!("Using fallback model version: {}", default_version.version);
-                            default_version
-                        }
-                        None => {
-                            metrics::record_inference_request("error");
-                            metrics::record_error("model_selection");
-                            return Err(anyhow::anyhow!(e));
-                        }
-                    }
-                } else {
                     metrics::record_inference_request("error");
                     metrics::record_error("model_selection");
                     return Err(anyhow::anyhow!(e));
                 }
+                metrics::record_inference_request("error");
+                metrics::record_error("model_selection");
+                return Err(anyhow::anyhow!(e));
             }
         };
 
@@ -264,8 +261,6 @@ impl ModelService {
         match self.normalize_input {
             NormalizeInput::None => Ok(input_data.to_vec()),
             NormalizeInput::MinMax => {
-                // Opt-in only: legacy behavior scaled inputs when any component was outside [0,1].
-                // That silently changed semantics; callers who need scaling must set NORMALIZE_INPUT=minmax.
                 let mut processed = input_data.to_vec();
 
                 let needs_normalization = processed.iter().copied().any(|x| x > 1.0 || x < 0.0);
@@ -331,7 +326,13 @@ impl ModelService {
             let inference_time = start.elapsed().as_millis();
             debug!("Model inference completed in {} ms for version {}", inference_time, model_version.version);
 
-            if inference_time > 5 {
+            let should_write_cache = if self.min_inference_ms_for_cache == 0 {
+                true
+            } else {
+                inference_time > u128::from(self.min_inference_ms_for_cache)
+            };
+
+            if should_write_cache {
                 metrics::record_cache_operation("set", "attempt");
 
                 let adaptive_ttl = self.cache_ttl.map(|base_ttl| {
