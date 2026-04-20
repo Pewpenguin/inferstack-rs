@@ -1,7 +1,8 @@
 mod common;
 
 use common::test_app::{
-    build_test_app_with, fixture_path, post_json_status_body, BuildTestAppOptions, BuildTestAppOverrides,
+    build_test_app_with, fixture_path, post_json_status_body, BuildTestAppOptions,
+    BuildTestAppOverrides,
 };
 use inferstack_rs::cache::CacheService;
 use inferstack_rs::config::{ModelVersionConfig, NormalizeInput};
@@ -25,10 +26,7 @@ async fn test_cache_miss_then_hit() {
                 .await
                 .expect("start redis (Docker running?)");
             let host = container.get_host().await.expect("host");
-            let port = container
-                .get_host_port_ipv4(6379)
-                .await
-                .expect("port");
+            let port = container.get_host_port_ipv4(6379).await.expect("port");
             format!("redis://{host}:{port}")
         }
     };
@@ -69,18 +67,12 @@ async fn test_cache_miss_then_hit() {
 
 #[test]
 fn test_cache_key_consistency() {
-    let k1 = CacheService::generate_key_with_version(
-        "inference:v1",
-        &vec![1.0f32, 2.0, 3.0, 4.0],
-        1,
-    )
-    .expect("key");
-    let k2 = CacheService::generate_key_with_version(
-        "inference:v1",
-        &vec![1.0f32, 2.0, 3.0, 4.0],
-        1,
-    )
-    .expect("key");
+    let k1 =
+        CacheService::generate_key_with_version("inference:v1", &vec![1.0f32, 2.0, 3.0, 4.0], 1)
+            .expect("key");
+    let k2 =
+        CacheService::generate_key_with_version("inference:v1", &vec![1.0f32, 2.0, 3.0, 4.0], 1)
+            .expect("key");
     assert_eq!(k1, k2);
 }
 

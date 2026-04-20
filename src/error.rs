@@ -6,14 +6,14 @@ use std::fmt;
 #[derive(Debug)]
 pub enum AppError {
     ValidationError(String),
-    
+
     ModelLoadError(String),
     InferenceError(String),
-    
+
     CacheError(String),
-    
+
     RateLimitExceeded,
-    
+
     InternalError(String),
 }
 
@@ -35,7 +35,7 @@ impl std::error::Error for AppError {}
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
         let err_string = err.to_string();
-        
+
         if err_string.contains("validation") {
             Self::ValidationError(err_string)
         } else if err_string.contains("model") || err_string.contains("inference") {
@@ -61,7 +61,7 @@ impl IntoResponse for AppError {
                 } else {
                     (StatusCode::INTERNAL_SERVER_ERROR, msg)
                 }
-            },
+            }
             Self::CacheError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             Self::RateLimitExceeded => (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -69,7 +69,7 @@ impl IntoResponse for AppError {
             ),
             Self::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
-        
+
         (status, message).into_response()
     }
 }

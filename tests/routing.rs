@@ -9,22 +9,11 @@ use common::test_app::{
 use inferstack_rs::config::{ModelVersionConfig, NormalizeInput};
 use inferstack_rs::model::ModelService;
 
-async fn model_service_two_versions(
-    alloc_a: u8,
-    alloc_b: u8,
-) -> ModelService {
+async fn model_service_two_versions(alloc_a: u8, alloc_b: u8) -> ModelService {
     ModelService::new_with_versions(
         vec![
-            (
-                "v1".to_string(),
-                fixture_path("identity.onnx"),
-                alloc_a,
-            ),
-            (
-                "v2".to_string(),
-                fixture_path("add_one.onnx"),
-                alloc_b,
-            ),
+            ("v1".to_string(), fixture_path("identity.onnx"), alloc_a),
+            ("v2".to_string(), fixture_path("add_one.onnx"), alloc_b),
         ],
         None,
         None,
@@ -39,9 +28,7 @@ async fn model_service_two_versions(
 #[tokio::test]
 async fn test_single_version_routing() {
     let ms = model_service_two_versions(100, 0).await;
-    let m = ms
-        .select_model_version_with_roll(None, 0)
-        .expect("version");
+    let m = ms.select_model_version_with_roll(None, 0).expect("version");
     assert_eq!(m.version, "v1");
     let m2 = ms
         .select_model_version_with_roll(None, 99)
@@ -173,8 +160,5 @@ async fn test_routing_http_reflects_version_override() {
         .expect("req");
     assert!(status.is_success(), "{}", String::from_utf8_lossy(&bytes));
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(
-        v["output"][0],
-        serde_json::json!([2.0, 3.0, 4.0, 5.0])
-    );
+    assert_eq!(v["output"][0], serde_json::json!([2.0, 3.0, 4.0, 5.0]));
 }

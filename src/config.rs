@@ -52,15 +52,14 @@ impl AppConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok();
 
-        let default_model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| "model.onnx".to_string());
+        let default_model_path =
+            std::env::var("MODEL_PATH").unwrap_or_else(|_| "model.onnx".to_string());
         let port = std::env::var("PORT")
             .unwrap_or_else(|_| "3000".to_string())
             .parse()
             .unwrap_or(3000);
         let redis_url = std::env::var("REDIS_URL").ok();
-        let cache_ttl = std::env::var("CACHE_TTL")
-            .ok()
-            .and_then(|v| v.parse().ok());
+        let cache_ttl = std::env::var("CACHE_TTL").ok().and_then(|v| v.parse().ok());
         let rate_limit_requests = std::env::var("RATE_LIMIT_REQUESTS")
             .unwrap_or_else(|_| "100".to_string())
             .parse()
@@ -99,9 +98,9 @@ impl AppConfig {
             Ok(s) => s.parse()?,
             Err(_) => NormalizeInput::None,
         };
-        
+
         let default_version = std::env::var("DEFAULT_MODEL_VERSION").ok();
-        
+
         let model_versions = std::env::var("MODEL_VERSIONS")
             .map(|versions_str| {
                 versions_str
@@ -112,14 +111,18 @@ impl AppConfig {
                             tracing::warn!("Invalid model version format: {}", version_str);
                             return None;
                         }
-                        
+
                         let version = parts[0].trim().to_string();
                         let path = parts[1].trim().to_string();
                         let traffic_allocation = parts[2].trim().parse().unwrap_or_else(|_| {
-                            tracing::warn!("Invalid traffic allocation for version {}: {}", version, parts[2]);
+                            tracing::warn!(
+                                "Invalid traffic allocation for version {}: {}",
+                                version,
+                                parts[2]
+                            );
                             0
                         });
-                        
+
                         Some(ModelVersionConfig {
                             version,
                             path,
@@ -194,8 +197,7 @@ impl AppConfig {
             if !Path::new(&mv.path).exists() {
                 error!(
                     "Model file not found for version {}: {}",
-                    mv.version,
-                    mv.path
+                    mv.version, mv.path
                 );
                 anyhow::bail!(
                     "Model file not found for version {}: {}",

@@ -1,7 +1,7 @@
+use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::convert::TryInto;
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -31,16 +31,19 @@ async fn main() -> Result<()> {
     let cache_service = if let Some(redis_url) = &config.redis_url {
         info!("Initializing Redis cache with URL: {}", redis_url);
 
-        let pool_size: u32 = config.redis_pool_size.try_into()
+        let pool_size: u32 = config
+            .redis_pool_size
+            .try_into()
             .context("redis_pool_size does not fit into u32")?;
 
         if pool_size == 0 {
-            anyhow::bail!(
-                "REDIS_POOL_SIZE must be greater than 0 when Redis caching is enabled"
-            );
+            anyhow::bail!("REDIS_POOL_SIZE must be greater than 0 when Redis caching is enabled");
         }
 
-        info!("Redis connection pool max_size (REDIS_POOL_SIZE): {}", pool_size);
+        info!(
+            "Redis connection pool max_size (REDIS_POOL_SIZE): {}",
+            pool_size
+        );
 
         let service = CacheService::new_with_pool_size(redis_url, pool_size)
             .await
@@ -48,7 +51,10 @@ async fn main() -> Result<()> {
 
         match service.health_check().await {
             Ok(_) => info!("Redis connection health check successful"),
-            Err(e) => warn!("Redis health check failed: {}, but continuing with cache service", e),
+            Err(e) => warn!(
+                "Redis health check failed: {}, but continuing with cache service",
+                e
+            ),
         }
 
         Some(Arc::new(service))
@@ -57,10 +63,12 @@ async fn main() -> Result<()> {
         None
     };
 
-    let model_versions: Vec<(String, String, u8)> = config.model_versions.iter()
+    let model_versions: Vec<(String, String, u8)> = config
+        .model_versions
+        .iter()
         .map(|v| (v.version.clone(), v.path.clone(), v.traffic_allocation))
         .collect();
-    
+
     let model_service = Arc::new(
         ModelService::new_with_versions(
             model_versions,
@@ -70,8 +78,8 @@ async fn main() -> Result<()> {
             config.normalize_input,
             config.min_inference_ms_for_cache,
         )
-            .await
-            .context("Failed to initialize model service")?,
+        .await
+        .context("Failed to initialize model service")?,
     );
 
     let rate_limiter = Arc::new(RateLimiter::new(
@@ -87,7 +95,9 @@ async fn main() -> Result<()> {
     info!("Rate limiter cleanup interval: {}s", cleanup_interval);
 
     let cleanup_task = tokio::spawn(async move {
-        rate_limiter_clone.cleanup(cleanup_shutdown_rx, cleanup_interval).await;
+        rate_limiter_clone
+            .cleanup(cleanup_shutdown_rx, cleanup_interval)
+            .await;
     });
 
     let shared_config = Arc::new(config);
@@ -95,7 +105,10 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .merge(routes::create_router(model_service, shared_config.clone()))
-        .route("/metrics", axum::routing::get(|| async move { metrics_handler.render() }))
+        .route(
+            "/metrics",
+            axum::routing::get(|| async move { metrics_handler.render() }),
+        )
         .layer(prometheus_layer)
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
