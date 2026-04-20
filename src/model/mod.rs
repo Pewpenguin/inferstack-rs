@@ -173,6 +173,16 @@ impl ModelService {
         input_data: Vec<f32>,
         version: Option<&str>,
     ) -> Result<(Vec<f32>, String), AppError> {
+        self.infer_with_version_with_request_id(input_data, version, None)
+            .await
+    }
+
+    pub async fn infer_with_version_with_request_id(
+        &self,
+        input_data: Vec<f32>,
+        version: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(Vec<f32>, String), AppError> {
         metrics::record_batch_size(input_data.len());
         let timer = Timer::new();
         let mut cached = false;
@@ -192,33 +202,57 @@ impl ModelService {
                 return Err(e);
             }
         };
+        info!(
+            request_id = request_id.unwrap_or("-"),
+            requested_model_version = version.unwrap_or("auto"),
+            selected_model_version = %model_version.version,
+            "Model routing decision made"
+        );
 
         let (result, executed_version) = match self
-            .infer_with_metrics(model_version, &input_data, &mut cached)
+            .infer_with_metrics(model_version, &input_data, &mut cached, request_id)
             .await
         {
             Ok(output) => (Ok(output), model_version.version.clone()),
             Err(e) => {
                 warn!(
-                    "Inference failed with model version {}: {}",
-                    model_version.version, e
+                    request_id = request_id.unwrap_or("-"),
+                    model_version = %model_version.version,
+                    error = %e,
+                    "Inference failed for selected model"
                 );
                 if model_version.version != self.default_version {
                     info!(
-                        "Attempting fallback to default model version: {}",
-                        self.default_version
+                        request_id = request_id.unwrap_or("-"),
+                        from_model_version = %model_version.version,
+                        to_model_version = %self.default_version,
+                        "Attempting fallback to default model"
                     );
                     if let Some(default_version) = self.models.get(&self.default_version) {
                         let fallback_result = self
-                            .infer_with_metrics(default_version, &input_data, &mut cached)
+                            .infer_with_metrics(
+                                default_version,
+                                &input_data,
+                                &mut cached,
+                                request_id,
+                            )
                             .await;
                         match fallback_result {
                             Ok(output) => {
-                                info!("Fallback to default model version successful");
+                                info!(
+                                    request_id = request_id.unwrap_or("-"),
+                                    model_version = %default_version.version,
+                                    "Fallback inference succeeded"
+                                );
                                 (Ok(output), default_version.version.clone())
                             }
                             Err(e2) => {
-                                warn!("Fallback to default model version also failed");
+                                warn!(
+                                    request_id = request_id.unwrap_or("-"),
+                                    model_version = %default_version.version,
+                                    error = %e2,
+                                    "Fallback inference failed"
+                                );
                                 (Err(e2), default_version.version.clone())
                             }
                         }
@@ -231,7 +265,8 @@ impl ModelService {
             }
         };
 
-        metrics::record_inference_latency(timer.elapsed_seconds(), cached, &executed_version);
+        let inference_duration = timer.elapsed_seconds();
+        metrics::record_inference_latency(inference_duration, cached, &executed_version);
 
         match &result {
             Ok(_) => {
@@ -245,6 +280,15 @@ impl ModelService {
                 metrics::record_model_version_error(&executed_version);
             }
         }
+
+        info!(
+            request_id = request_id.unwrap_or("-"),
+            model_version = %executed_version,
+            cache_hit = cached,
+            inference_duration_ms = (inference_duration * 1000.0),
+            success = result.is_ok(),
+            "Inference completed"
+        );
 
         result.map(|values| (values, executed_version))
     }

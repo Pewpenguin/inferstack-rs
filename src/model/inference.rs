@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use tract_onnx::prelude::*;
 
 use crate::cache::CacheService;
@@ -15,6 +15,7 @@ impl ModelService {
         model_version: &ModelVersion,
         input_data: &[f32],
         cached: &mut bool,
+        request_id: Option<&str>,
     ) -> Result<Vec<f32>, AppError> {
         self.validate_input(model_version, input_data)?;
 
@@ -32,9 +33,11 @@ impl ModelService {
 
             match cache.get_with_retry::<Vec<f32>>(&cache_key, 2, 50).await {
                 Ok(Some(cached_result)) => {
-                    debug!(
-                        "Using cached inference result for version {}",
-                        model_version.version
+                    info!(
+                        request_id = request_id.unwrap_or("-"),
+                        model_version = %model_version.version,
+                        cache_hit = true,
+                        "Cache hit for inference result"
                     );
                     metrics::record_cache_operation("get", "hit");
                     *cached = true;
@@ -42,12 +45,22 @@ impl ModelService {
                 }
                 Ok(None) => {
                     metrics::record_cache_operation("get", "miss");
-                    debug!("Cache miss for key: {}", cache_key);
+                    info!(
+                        request_id = request_id.unwrap_or("-"),
+                        model_version = %model_version.version,
+                        cache_hit = false,
+                        "Cache miss for inference result"
+                    );
                 }
                 Err(e) => {
                     metrics::record_cache_operation("get", "error");
                     metrics::record_error("cache_get");
-                    warn!("Cache get error: {}", e);
+                    warn!(
+                        request_id = request_id.unwrap_or("-"),
+                        model_version = %model_version.version,
+                        error = %e,
+                        "Cache lookup failed"
+                    );
                 }
             }
 
@@ -56,9 +69,11 @@ impl ModelService {
                 .perform_inference(model_version, processed_input.clone())
                 .await?;
             let inference_time = start.elapsed().as_millis();
-            debug!(
-                "Model inference completed in {} ms for version {}",
-                inference_time, model_version.version
+            info!(
+                request_id = request_id.unwrap_or("-"),
+                model_version = %model_version.version,
+                inference_duration_ms = inference_time,
+                "Model execution finished"
             );
 
             let should_write_cache = if self.min_inference_ms_for_cache == 0 {
@@ -87,14 +102,21 @@ impl ModelService {
                     Ok(_) => {
                         metrics::record_cache_operation("set", "success");
                         debug!(
-                            "Successfully cached inference result for version {} with TTL: {:?}s",
-                            model_version.version, adaptive_ttl
+                            request_id = request_id.unwrap_or("-"),
+                            model_version = %model_version.version,
+                            ttl_seconds = ?adaptive_ttl,
+                            "Cached inference result"
                         );
                     }
                     Err(e) => {
                         metrics::record_cache_operation("set", "error");
                         metrics::record_error("cache_set");
-                        warn!("Cache set error: {}", e);
+                        warn!(
+                            request_id = request_id.unwrap_or("-"),
+                            model_version = %model_version.version,
+                            error = %e,
+                            "Cache store failed"
+                        );
                     }
                 }
 

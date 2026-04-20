@@ -65,8 +65,12 @@ impl CacheService {
                         return Err(e);
                     }
                     debug!(
-                        "Redis GET retry {}/{} for key '{}': {}",
-                        attempts, max_attempts, key, e
+                        cache_op = "get",
+                        key = key,
+                        attempt = attempts,
+                        max_attempts,
+                        error = %e,
+                        "Retrying cache get operation"
                     );
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                 }
@@ -94,8 +98,12 @@ impl CacheService {
                         return Err(e);
                     }
                     debug!(
-                        "Redis SET retry {}/{} for key '{}': {}",
-                        attempts, max_attempts, key, e
+                        cache_op = "set",
+                        key = key,
+                        attempt = attempts,
+                        max_attempts,
+                        error = %e,
+                        "Retrying cache set operation"
                     );
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                 }
@@ -118,11 +126,11 @@ impl CacheService {
                 let value: T = serde_json::from_str(&data).map_err(|e| {
                     AppError::CacheError(format!("Failed to deserialize cached data: {}", e))
                 })?;
-                debug!("Cache hit for key: {}", key);
+                info!(cache_hit = true, key = key, "Cache lookup completed");
                 Ok(Some(value))
             }
             None => {
-                debug!("Cache miss for key: {}", key);
+                info!(cache_hit = false, key = key, "Cache lookup completed");
                 Ok(None)
             }
         }
@@ -169,7 +177,7 @@ impl CacheService {
             }
         }
 
-        debug!("Cached value for key: {}", key);
+        debug!(key = key, ttl_seconds = ?ttl_seconds, "Cached value stored");
         Ok(())
     }
 
@@ -193,7 +201,7 @@ impl CacheService {
         let hash_hex: String = hash.iter().map(|byte| format!("{:02x}", byte)).collect();
         let key = format!("{}_v{}{}", prefix, version, hash_hex);
 
-        debug!("Generated versioned key: {}", key);
+        debug!("Generated versioned cache key");
         Ok(key)
     }
 }
