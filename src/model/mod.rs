@@ -292,4 +292,47 @@ impl ModelService {
 
         result.map(|values| (values, executed_version))
     }
+
+    pub(crate) async fn infer_batch_with_version_with_request_id(
+        &self,
+        inputs: Vec<Vec<f32>>,
+        version: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(Vec<Vec<f32>>, String), AppError> {
+        metrics::record_batch_size(inputs.len());
+        metrics::record_inference_request("started");
+
+        let model_version: &ModelVersion = match self.select_model_version(version) {
+            Ok(v) => v,
+            Err(e) => {
+                metrics::record_inference_request("error");
+                metrics::record_error("model_selection");
+                return Err(e);
+            }
+        };
+
+        info!(
+            request_id = request_id.unwrap_or("-"),
+            requested_model_version = version.unwrap_or("auto"),
+            selected_model_version = %model_version.version,
+            "Batch model routing decision made"
+        );
+
+        let result = self.infer_batch_with_metrics(model_version, inputs).await;
+
+        match &result {
+            Ok(_) => {
+                metrics::record_inference_request("success");
+                metrics::record_model_version_usage(&model_version.version);
+                metrics::record_model_version_success(&model_version.version);
+            }
+            Err(_) => {
+                metrics::record_inference_request("error");
+                metrics::record_error("inference");
+                metrics::record_model_version_error(&model_version.version);
+            }
+        }
+
+        result.map(|values| (values, model_version.version.clone()))
+    }
 }

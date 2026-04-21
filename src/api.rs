@@ -218,8 +218,6 @@ async fn process_batch(
     model_version: Option<String>,
     request_id: Option<String>,
 ) -> Result<Vec<Vec<f32>>, AppError> {
-    use futures::future;
-
     let batch_size = inputs.len();
     info!(
         request_id = request_id.as_deref().unwrap_or("-"),
@@ -230,42 +228,30 @@ async fn process_batch(
     metrics::record_batch_size(batch_size);
 
     let batch_timer = Timer::new();
+    for _ in 0..batch_size {
+        metrics::record_batch_item("started");
+    }
 
-    let futures = inputs.into_iter().enumerate().map(|(idx, input)| {
-        let model_service = model_service.clone();
-        let version = model_version.clone();
-        let request_id = request_id.clone();
-        async move {
-            metrics::record_batch_item("started");
-            let result = model_service
-                .infer_with_version_with_request_id(
-                    input,
-                    version.as_deref(),
-                    request_id.as_deref(),
-                )
-                .await
-                .map(|(values, _)| values)
-                .map_err(|e| {
-                    AppError::InferenceError(format!(
-                        "Failed to process batch item at index {}: {}",
-                        idx, e
-                    ))
-                });
+    let outputs = model_service
+        .infer_batch_with_version_with_request_id(
+            inputs,
+            model_version.as_deref(),
+            request_id.as_deref(),
+        )
+        .await
+        .map(|(values, _)| values);
 
-            match &result {
-                Ok(_) => metrics::record_batch_item("success"),
-                Err(_) => metrics::record_batch_item("error"),
+    match &outputs {
+        Ok(_) => {
+            for _ in 0..batch_size {
+                metrics::record_batch_item("success");
             }
-
-            result
         }
-    });
-
-    let results = future::join_all(futures).await;
-
-    let mut outputs = Vec::with_capacity(results.len());
-    for result in results {
-        outputs.push(result?);
+        Err(_) => {
+            for _ in 0..batch_size {
+                metrics::record_batch_item("error");
+            }
+        }
     }
 
     let duration = batch_timer.elapsed_seconds();
@@ -278,7 +264,7 @@ async fn process_batch(
     metrics::record_api_latency("batch_processing", duration);
     metrics::record_batch_throughput(batch_size, duration);
 
-    Ok(outputs)
+    outputs
 }
 
 pub async fn batch_inference_handler(
