@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use tracing::{info, warn};
 use tract_core::prelude::*;
 use tract_onnx::prelude::*;

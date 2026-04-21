@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 use tract_onnx::prelude::*;
 
@@ -146,26 +147,35 @@ impl ModelService {
     ) -> Result<Vec<f32>, AppError> {
         let timer = Timer::new();
 
-        let model = model_version.model.lock().await;
-
         let input = tract_ndarray::Array::from_shape_vec((1, input_data.len()), input_data)
             .map_err(|e| {
                 AppError::InferenceError(format!("Failed to create input tensor: {}", e))
             })?;
 
-        let result = model
-            .run(tvec![input.into_tvalue()])
-            .map_err(|e| AppError::InferenceError(format!("Failed to run inference: {}", e)))?;
+        let model = model_version.model.clone();
+        let output_values = spawn_blocking(move || -> Result<Vec<f32>, AppError> {
+            let model = model.lock().map_err(|e| {
+                AppError::InferenceError(format!("Failed to lock model for inference: {}", e))
+            })?;
 
-        let output = result[0].to_array_view::<f32>().map_err(|e| {
-            AppError::InferenceError(format!("Failed to convert output to array: {}", e))
-        })?;
+            let result = model.run(tvec![input.into_tvalue()]).map_err(|e| {
+                AppError::InferenceError(format!("Failed to run inference: {}", e))
+            })?;
+
+            let output = result[0].to_array_view::<f32>().map_err(|e| {
+                AppError::InferenceError(format!("Failed to convert output to array: {}", e))
+            })?;
+
+            Ok(output.iter().copied().collect())
+        })
+        .await
+        .map_err(|e| AppError::InferenceError(format!("Inference task join error: {}", e)))??;
 
         metrics::record_model_execution_time_with_version(
             timer.elapsed_seconds(),
             &model_version.version,
         );
 
-        Ok(output.iter().copied().collect())
+        Ok(output_values)
     }
 }
