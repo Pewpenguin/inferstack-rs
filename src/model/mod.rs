@@ -182,22 +182,19 @@ impl ModelService {
         version: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(Vec<f32>, String), AppError> {
-        metrics::record_batch_size(input_data.len());
         let timer = Timer::new();
         let mut cached = false;
 
-        metrics::record_inference_request("started");
+        metrics::record_inference_request();
 
         let model_version: &ModelVersion = match self.select_model_version(version) {
             Ok(v) => v,
             Err(e) => {
                 if version.is_some() {
-                    metrics::record_inference_request("error");
-                    metrics::record_error("model_selection");
+                    metrics::record_inference_error();
                     return Err(e);
                 }
-                metrics::record_inference_request("error");
-                metrics::record_error("model_selection");
+                metrics::record_inference_error();
                 return Err(e);
             }
         };
@@ -265,24 +262,18 @@ impl ModelService {
         };
 
         let inference_duration = timer.elapsed_seconds();
-        metrics::record_inference_latency(inference_duration, cached, &executed_version);
 
         match &result {
-            Ok(_) => {
-                metrics::record_inference_request("success");
-                metrics::record_model_version_usage(&executed_version);
-                metrics::record_model_version_success(&executed_version);
-            }
+            Ok(_) => {}
             Err(_) => {
-                metrics::record_inference_request("error");
-                metrics::record_error("inference");
-                metrics::record_model_version_error(&executed_version);
+                metrics::record_inference_error();
             }
         }
 
         info!(
             request_id = request_id.unwrap_or("-"),
             model_version = %executed_version,
+            batch_size = 1,
             cache_hit = cached,
             inference_duration_ms = (inference_duration * 1000.0),
             success = result.is_ok(),
@@ -298,14 +289,14 @@ impl ModelService {
         version: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(Vec<Vec<f32>>, String), AppError> {
-        metrics::record_batch_size(inputs.len());
-        metrics::record_inference_request("started");
+        let timer = Timer::new();
+        let batch_size = inputs.len();
+        metrics::record_inference_request();
 
         let model_version: &ModelVersion = match self.select_model_version(version) {
             Ok(v) => v,
             Err(e) => {
-                metrics::record_inference_request("error");
-                metrics::record_error("model_selection");
+                metrics::record_inference_error();
                 return Err(e);
             }
         };
@@ -318,20 +309,40 @@ impl ModelService {
         );
 
         let result = self.infer_batch_with_metrics(model_version, inputs).await;
+        let duration_ms = timer.elapsed_seconds() * 1000.0;
 
         match &result {
-            Ok(_) => {
-                metrics::record_inference_request("success");
-                metrics::record_model_version_usage(&model_version.version);
-                metrics::record_model_version_success(&model_version.version);
-            }
-            Err(_) => {
-                metrics::record_inference_request("error");
-                metrics::record_error("inference");
-                metrics::record_model_version_error(&model_version.version);
+            Ok(_) => info!(
+                request_id = request_id.unwrap_or("-"),
+                model_version = %model_version.version,
+                batch_size,
+                inference_duration_ms = duration_ms,
+                "Batch inference completed"
+            ),
+            Err(err) => {
+                metrics::record_inference_error();
+                warn!(
+                    request_id = request_id.unwrap_or("-"),
+                    model_version = %model_version.version,
+                    batch_size,
+                    inference_duration_ms = duration_ms,
+                    error = %err,
+                    "Batch inference failed"
+                );
             }
         }
 
         result.map(|values| (values, model_version.version.clone()))
+    }
+
+    pub fn models_loaded(&self) -> bool {
+        !self.models.is_empty()
+    }
+
+    pub async fn redis_connected(&self) -> bool {
+        match &self.cache {
+            Some(cache) => cache.health_check().await.is_ok(),
+            None => true,
+        }
     }
 }

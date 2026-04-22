@@ -6,7 +6,7 @@ use tract_onnx::prelude::*;
 
 use crate::cache::CacheService;
 use crate::error::AppError;
-use crate::metrics::{self, Timer};
+use crate::metrics;
 
 use super::{ModelService, ModelVersion};
 
@@ -30,8 +30,6 @@ impl ModelService {
             )
             .map_err(|e| AppError::CacheError(format!("Failed to generate cache key: {}", e)))?;
 
-            metrics::record_cache_operation("get", "attempt");
-
             match cache.get_with_retry::<Vec<f32>>(&cache_key, 2, 50).await {
                 Ok(Some(cached_result)) => {
                     info!(
@@ -40,12 +38,12 @@ impl ModelService {
                         cache_hit = true,
                         "Cache hit for inference result"
                     );
-                    metrics::record_cache_operation("get", "hit");
+                    metrics::record_cache_hit();
                     *cached = true;
                     return Ok(cached_result);
                 }
                 Ok(None) => {
-                    metrics::record_cache_operation("get", "miss");
+                    metrics::record_cache_miss();
                     info!(
                         request_id = request_id.unwrap_or("-"),
                         model_version = %model_version.version,
@@ -54,8 +52,7 @@ impl ModelService {
                     );
                 }
                 Err(e) => {
-                    metrics::record_cache_operation("get", "error");
-                    metrics::record_error("cache_get");
+                    metrics::record_inference_error();
                     warn!(
                         request_id = request_id.unwrap_or("-"),
                         model_version = %model_version.version,
@@ -84,8 +81,6 @@ impl ModelService {
             };
 
             if should_write_cache {
-                metrics::record_cache_operation("set", "attempt");
-
                 let adaptive_ttl = self.cache_ttl.map(|base_ttl| {
                     if inference_time > 100 {
                         base_ttl * 2
@@ -101,7 +96,6 @@ impl ModelService {
                     .await
                 {
                     Ok(_) => {
-                        metrics::record_cache_operation("set", "success");
                         debug!(
                             request_id = request_id.unwrap_or("-"),
                             model_version = %model_version.version,
@@ -110,8 +104,7 @@ impl ModelService {
                         );
                     }
                     Err(e) => {
-                        metrics::record_cache_operation("set", "error");
-                        metrics::record_error("cache_set");
+                        metrics::record_inference_error();
                         warn!(
                             request_id = request_id.unwrap_or("-"),
                             model_version = %model_version.version,
@@ -145,8 +138,6 @@ impl ModelService {
         model_version: &ModelVersion,
         input_data: Vec<f32>,
     ) -> Result<Vec<f32>, AppError> {
-        let timer = Timer::new();
-
         let input = tract_ndarray::Array::from_shape_vec((1, input_data.len()), input_data)
             .map_err(|e| {
                 AppError::InferenceError(format!("Failed to create input tensor: {}", e))
@@ -154,9 +145,9 @@ impl ModelService {
 
         let model = model_version.model.clone();
         let output_values = spawn_blocking(move || -> Result<Vec<f32>, AppError> {
-            let result = model.run(tvec![input.into_tvalue()]).map_err(|e| {
-                AppError::InferenceError(format!("Failed to run inference: {}", e))
-            })?;
+            let result = model
+                .run(tvec![input.into_tvalue()])
+                .map_err(|e| AppError::InferenceError(format!("Failed to run inference: {}", e)))?;
 
             let output = result[0].to_array_view::<f32>().map_err(|e| {
                 AppError::InferenceError(format!("Failed to convert output to array: {}", e))
@@ -166,12 +157,6 @@ impl ModelService {
         })
         .await
         .map_err(|e| AppError::InferenceError(format!("Inference task join error: {}", e)))??;
-
-        metrics::record_model_execution_time_with_version(
-            timer.elapsed_seconds(),
-            &model_version.version,
-        );
-
         Ok(output_values)
     }
 
@@ -203,7 +188,6 @@ impl ModelService {
                     AppError::CacheError(format!("Failed to generate batch cache keys: {}", e))
                 })?;
 
-            metrics::record_cache_operation("mget", "attempt");
             match cache.get_many::<Vec<f32>>(cache_keys.clone()).await {
                 Ok(cached_results) => {
                     let mut outputs = vec![None; processed_inputs.len()];
@@ -213,10 +197,10 @@ impl ModelService {
 
                     for idx in 0..cached_results.len() {
                         if let Some(value) = &cached_results[idx] {
-                            metrics::record_cache_operation("mget", "hit");
+                            metrics::record_cache_hit();
                             outputs[idx] = Some(value.clone());
                         } else {
-                            metrics::record_cache_operation("mget", "miss");
+                            metrics::record_cache_miss();
                             miss_indices.push(idx);
                             miss_inputs.push(processed_inputs[idx].clone());
                             miss_keys.push(cache_keys[idx].clone());
@@ -248,7 +232,6 @@ impl ModelService {
                             });
 
                             for idx in 0..miss_outputs.len() {
-                                metrics::record_cache_operation("set", "attempt");
                                 match cache
                                     .set_with_retry(
                                         &miss_keys[idx],
@@ -259,10 +242,9 @@ impl ModelService {
                                     )
                                     .await
                                 {
-                                    Ok(_) => metrics::record_cache_operation("set", "success"),
+                                    Ok(_) => {}
                                     Err(e) => {
-                                        metrics::record_cache_operation("set", "error");
-                                        metrics::record_error("cache_set");
+                                        metrics::record_inference_error();
                                         warn!(error = %e, "Batch cache write failed");
                                     }
                                 }
@@ -285,8 +267,7 @@ impl ModelService {
                     return Ok(finalized);
                 }
                 Err(e) => {
-                    metrics::record_cache_operation("mget", "error");
-                    metrics::record_error("cache_get");
+                    metrics::record_inference_error();
                     warn!(error = %e, "Batch cache lookup failed");
                 }
             }
@@ -324,8 +305,6 @@ impl ModelService {
         model_version: &ModelVersion,
         inputs: Vec<Vec<f32>>,
     ) -> Result<Vec<Vec<f32>>, AppError> {
-        let timer = Timer::new();
-
         if inputs.is_empty() {
             return Err(AppError::ValidationError(
                 "Batch size must be greater than zero".to_string(),
@@ -359,10 +338,7 @@ impl ModelService {
             })?;
 
             let output = result[0].to_array_view::<f32>().map_err(|e| {
-                AppError::InferenceError(format!(
-                    "Failed to convert batch output to array: {}",
-                    e
-                ))
+                AppError::InferenceError(format!("Failed to convert batch output to array: {}", e))
             })?;
 
             let output_shape = output.shape();
@@ -400,13 +376,9 @@ impl ModelService {
                 .collect::<Vec<Vec<f32>>>())
         })
         .await
-        .map_err(|e| AppError::InferenceError(format!("Batch inference task join error: {}", e)))??;
-
-        metrics::record_model_execution_time_with_version(
-            timer.elapsed_seconds(),
-            &model_version.version,
-        );
-
+        .map_err(|e| {
+            AppError::InferenceError(format!("Batch inference task join error: {}", e))
+        })??;
         Ok(batched_output)
     }
 }

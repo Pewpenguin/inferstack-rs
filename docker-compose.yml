@@ -4,14 +4,14 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "8080:8080"
     environment:
-      - MODEL_PATH=/app/model.onnx
-      - PORT=3000
+      - MODEL_PATH=/app/model/identity.onnx
+      - PORT=8080
       - REDIS_URL=redis://redis:6379
       - CACHE_TTL=3600
     volumes:
-      - ./model.onnx:/app/model.onnx:ro
+      - ./tests/fixtures/identity.onnx:/app/model/identity.onnx:ro
     depends_on:
       - redis
     networks:
@@ -32,6 +32,18 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
 
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - inferstack-network
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v2.48.1
     ports:
@@ -47,6 +59,9 @@ services:
       - "--web.enable-lifecycle"
     networks:
       - inferstack-network
+    depends_on:
+      - app
+      - redis-exporter
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -58,7 +73,7 @@ services:
       - "3001:3000"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     environment:
       - GF_SECURITY_ADMIN_USER=admin

@@ -4,11 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use axum::http::HeaderName;
 use axum::Router;
-use axum_prometheus::PrometheusMetricLayer;
 use dotenvy::dotenv;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::signal;
-use tower_http::trace::TraceLayer;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::{info, warn, Level};
 
 use inferstack_rs::api::routes;
@@ -101,16 +103,40 @@ async fn main() -> Result<()> {
     });
 
     let shared_config = Arc::new(config);
-    let (prometheus_layer, metrics_handler) = PrometheusMetricLayer::pair();
+    let prometheus_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .context("Failed to install Prometheus metrics recorder")?;
+
+    let x_request_id = HeaderName::from_static("x-request-id");
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(move |request: &axum::http::Request<_>| {
+            let request_id = request
+                .headers()
+                .get(&x_request_id)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-");
+            tracing::info_span!(
+                "http_request",
+                method = %request.method(),
+                path = %request.uri().path(),
+                request_id = %request_id
+            )
+        })
+        .on_request(DefaultOnRequest::new().level(Level::INFO))
+        .on_response(DefaultOnResponse::new().level(Level::INFO));
 
     let app = Router::new()
         .merge(routes::create_router(model_service, shared_config.clone()))
         .route(
             "/metrics",
-            axum::routing::get(|| async move { metrics_handler.render() }),
+            axum::routing::get(move || {
+                let handle = prometheus_handle.clone();
+                async move { handle.render() }
+            }),
         )
-        .layer(prometheus_layer)
-        .layer(TraceLayer::new_for_http())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(trace_layer)
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter.clone(),
             inferstack_rs::middleware::rate_limit,

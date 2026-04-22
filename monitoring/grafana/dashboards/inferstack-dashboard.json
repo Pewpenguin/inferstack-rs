@@ -38,7 +38,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -98,7 +98,11 @@
       "id": 2,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "sum"],
+          "calcs": [
+            "mean",
+            "max",
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -112,10 +116,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(inferstack_api_requests_total{status=\"success\"}[1m])) by (endpoint)",
+          "expr": "sum(rate(inference_requests_total[1m]))",
           "legendFormat": "{{endpoint}}",
           "range": true,
           "refId": "A"
@@ -127,7 +131,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -187,7 +191,11 @@
       "id": 3,
       "options": {
         "legend": {
-          "calcs": ["mean", "p95", "max"],
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -201,10 +209,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(inferstack_api_latency_seconds_bucket[1m])) by (endpoint, le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.95\"}[1m])",
           "legendFormat": "{{endpoint}} p95",
           "range": true,
           "refId": "A"
@@ -212,10 +220,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(inferstack_api_latency_seconds_bucket[1m])) by (endpoint, le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.5\"}[1m])",
           "hide": false,
           "legendFormat": "{{endpoint}} p50",
           "range": true,
@@ -228,7 +236,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -266,7 +274,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -277,10 +287,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(increase(inferstack_api_requests_total{status=\"error\"}[5m]))",
+          "expr": "sum(increase(inference_errors_total[5m]))",
           "legendFormat": "API Errors",
           "range": true,
           "refId": "A"
@@ -292,7 +302,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -330,7 +340,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -341,10 +353,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(increase(inferstack_inference_total{status=\"error\"}[5m]))",
+          "expr": "sum(increase(inference_errors_total[5m]))",
           "legendFormat": "Inference Errors",
           "range": true,
           "refId": "A"
@@ -356,7 +368,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -394,7 +406,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -405,10 +419,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(increase(inferstack_errors_total[5m])) by (type)",
+          "expr": "sum(increase(inference_errors_total[5m]))",
           "legendFormat": "{{type}}",
           "range": true,
           "refId": "A"
@@ -433,7 +447,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -493,7 +507,10 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -507,10 +524,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(inferstack_inference_total{status=\"success\"}[1m]))",
+          "expr": "sum(rate(inference_requests_total[1m]))",
           "legendFormat": "Inference Rate",
           "range": true,
           "refId": "A"
@@ -522,7 +539,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -582,7 +599,11 @@
       "id": 9,
       "options": {
         "legend": {
-          "calcs": ["mean", "p95", "max"],
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -596,10 +617,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(inferstack_inference_duration_seconds_bucket{cached=\"false\"}[1m])) by (le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.95\"}[1m])",
           "legendFormat": "p95 (no cache)",
           "range": true,
           "refId": "A"
@@ -607,10 +628,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(inferstack_inference_duration_seconds_bucket{cached=\"false\"}[1m])) by (le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.5\"}[1m])",
           "hide": false,
           "legendFormat": "p50 (no cache)",
           "range": true,
@@ -619,10 +640,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(inferstack_inference_duration_seconds_bucket{cached=\"true\"}[1m])) by (le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.95\"}[1m])",
           "hide": false,
           "legendFormat": "p95 (cached)",
           "range": true,
@@ -631,10 +652,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(inferstack_inference_duration_seconds_bucket{cached=\"true\"}[1m])) by (le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.5\"}[1m])",
           "hide": false,
           "legendFormat": "p50 (cached)",
           "range": true,
@@ -647,7 +668,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -707,7 +728,11 @@
       "id": 10,
       "options": {
         "legend": {
-          "calcs": ["mean", "p95", "max"],
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -721,10 +746,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(inferstack_model_execution_seconds_bucket[1m])) by (le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.95\"}[1m])",
           "legendFormat": "p95",
           "range": true,
           "refId": "A"
@@ -732,10 +757,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(inferstack_model_execution_seconds_bucket[1m])) by (le))",
+          "expr": "avg_over_time(inference_duration_seconds{quantile=\"0.5\"}[1m])",
           "hide": false,
           "legendFormat": "p50",
           "range": true,
@@ -748,7 +773,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -808,7 +833,10 @@
       "id": 11,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -822,10 +850,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(inferstack_batch_size_bucket[1m])) by (le))",
+          "expr": "sum(increase(batch_inference_requests_total[5m]))",
           "legendFormat": "p95",
           "range": true,
           "refId": "A"
@@ -833,10 +861,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(inferstack_batch_size_bucket[1m])) by (le))",
+          "expr": "sum(rate(batch_inference_requests_total[1m]))",
           "hide": false,
           "legendFormat": "p50",
           "range": true,
@@ -862,7 +890,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -922,7 +950,11 @@
       "id": 13,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "sum"],
+          "calcs": [
+            "mean",
+            "max",
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -936,10 +968,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(inferstack_cache_operations_total{operation=\"get\"}[1m])) by (result)",
+          "expr": "sum(rate(cache_hits_total[1m]))",
           "legendFormat": "{{result}}",
           "range": true,
           "refId": "A"
@@ -951,7 +983,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -1011,7 +1043,11 @@
       "id": 14,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "sum"],
+          "calcs": [
+            "mean",
+            "max",
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1025,10 +1061,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(inferstack_cache_operations_total{operation=\"set\"}[1m])) by (result)",
+          "expr": "sum(rate(cache_misses_total[1m]))",
           "legendFormat": "{{result}}",
           "range": true,
           "refId": "A"
@@ -1040,7 +1076,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -1075,7 +1111,9 @@
       "options": {
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1087,10 +1125,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(inferstack_cache_operations_total{operation=\"get\",result=\"hit\"}[5m])) / sum(rate(inferstack_cache_operations_total{operation=\"get\",result=~\"hit|miss\"}[5m]))",
+          "expr": "sum(rate(cache_hits_total[5m])) / clamp_min(sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])), 1e-9)",
           "legendFormat": "Cache Hit Ratio",
           "range": true,
           "refId": "A"
@@ -1102,7 +1140,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -1162,7 +1200,11 @@
       "id": 16,
       "options": {
         "legend": {
-          "calcs": ["mean", "min", "max"],
+          "calcs": [
+            "mean",
+            "min",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1176,10 +1218,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(inferstack_cache_operations_total{operation=\"get\",result=\"hit\"}[1m])) / sum(rate(inferstack_cache_operations_total{operation=\"get\",result=~\"hit|miss\"}[1m]))",
+          "expr": "sum(rate(cache_hits_total[1m])) / clamp_min(sum(rate(cache_hits_total[1m])) + sum(rate(cache_misses_total[1m])), 1e-9)",
           "legendFormat": "Cache Hit Ratio",
           "range": true,
           "refId": "A"
@@ -1204,7 +1246,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -1264,7 +1306,10 @@
       "id": 18,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1278,7 +1323,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
           "expr": "100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
@@ -1293,7 +1338,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -1353,7 +1398,10 @@
       "id": 19,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1367,7 +1415,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
           "expr": "100 * (1 - ((node_memory_MemAvailable_bytes or node_memory_MemFree_bytes) / node_memory_MemTotal_bytes))",
@@ -1383,7 +1431,11 @@
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["inferstack", "onnx", "inference"],
+  "tags": [
+    "inferstack",
+    "onnx",
+    "inference"
+  ],
   "templating": {
     "list": [
       {
@@ -1415,6 +1467,6 @@
   "timezone": "",
   "title": "InferStack Dashboard",
   "uid": "inferstack-metrics",
-  "version": 1,
+  "version": 3,
   "weekStart": ""
 }

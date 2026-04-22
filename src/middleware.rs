@@ -14,7 +14,6 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::error::AppError;
-use crate::metrics;
 
 pub struct RateLimiter {
     requests: Mutex<HashMap<IpAddr, Vec<Instant>>>,
@@ -44,8 +43,6 @@ impl RateLimiter {
             timestamps.push(now);
             true
         } else {
-            metrics::record_error("rate_limit_exceeded");
-            metrics::record_rate_limit("exceeded");
             false
         }
     }
@@ -109,18 +106,14 @@ pub async fn rate_limit(
 
     if rate_limiter.is_allowed(&ip) {
         debug!("Request allowed for IP: {}", ip);
-        metrics::record_rate_limit("allowed");
         next.run(request).await
     } else {
         warn!("Rate limit exceeded for IP: {}", ip);
-        metrics::record_api_request("rate_limited", "error");
-        metrics::record_rate_limit("blocked");
         AppError::RateLimitExceeded.into_response()
     }
 }
 
 #[allow(dead_code)]
 pub fn validation_error(message: &str) -> impl IntoResponse {
-    metrics::record_error("validation_error");
     AppError::ValidationError(message.to_string()).into_response()
 }

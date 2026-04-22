@@ -35,14 +35,12 @@ impl InferenceRequest {
         max_batch_size: usize,
     ) -> Result<(), AppError> {
         if self.input.is_empty() {
-            metrics::record_validation_error("empty_batch");
             return Err(AppError::ValidationError(
                 "Batch cannot be empty".to_string(),
             ));
         }
 
         if self.input.len() > max_batch_size {
-            metrics::record_validation_error("batch_too_large");
             return Err(AppError::ValidationError(format!(
                 "Batch size too large: {} (maximum: 32)",
                 self.input.len()
@@ -53,7 +51,6 @@ impl InferenceRequest {
             let input_len = input.len();
 
             if input_len < min_size {
-                metrics::record_validation_error("input_too_small");
                 return Err(AppError::ValidationError(format!(
                     "Input at index {} size too small: {} (minimum: {})",
                     i, input_len, min_size
@@ -61,7 +58,6 @@ impl InferenceRequest {
             }
 
             if input_len > max_size {
-                metrics::record_validation_error("input_too_large");
                 return Err(AppError::ValidationError(format!(
                     "Input at index {} size too large: {} (maximum: {})",
                     i, input_len, max_size
@@ -69,7 +65,6 @@ impl InferenceRequest {
             }
 
             if input.iter().any(|&x| x.is_nan() || x.is_infinite()) {
-                metrics::record_validation_error("invalid_values");
                 return Err(AppError::ValidationError(format!(
                     "Input at index {} contains NaN or infinity values",
                     i
@@ -86,10 +81,35 @@ pub struct InferenceResponse {
     output: Vec<Vec<f32>>,
 }
 
-pub async fn health_check() -> impl IntoResponse {
-    info!("Health check requested");
-    metrics::record_api_request("health", "success");
-    StatusCode::OK
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    status: &'static str,
+    models_loaded: bool,
+    redis_connected: bool,
+}
+
+pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let models_loaded = state.model_service.models_loaded();
+    let redis_connected = state.model_service.redis_connected().await;
+    let status = if models_loaded { "ok" } else { "error" };
+    let code = if models_loaded {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    info!(
+        models_loaded,
+        redis_connected, status, "Health check requested"
+    );
+    (
+        code,
+        Json(HealthResponse {
+            status,
+            models_loaded,
+            redis_connected,
+        }),
+    )
 }
 
 pub async fn inference_handler(
@@ -119,14 +139,14 @@ pub async fn inference_handler(
     );
 
     let timer = Timer::new();
-    metrics::record_api_request(endpoint, "started");
+    metrics::record_inference_request();
 
     if let Err(err) = request.validate(
         config.min_input_size,
         config.max_input_size,
         config.max_batch_size,
     ) {
-        metrics::record_api_request(endpoint, "validation_error");
+        metrics::record_inference_error();
         error!(
             endpoint,
             request_id = request_id.as_deref().unwrap_or("-"),
@@ -138,7 +158,7 @@ pub async fn inference_handler(
 
     let result = if !request.batch {
         if batch_size != 1 {
-            metrics::record_api_request(endpoint, "validation_error");
+            metrics::record_inference_error();
             let err =
                 AppError::ValidationError("Non-batch mode requires exactly one input".to_string());
             error!(
@@ -159,15 +179,13 @@ pub async fn inference_handler(
             .await
         {
             Ok((prediction, _executed_version)) => {
-                metrics::record_api_request(endpoint, "success");
                 let response = InferenceResponse {
                     output: vec![prediction],
                 };
                 (StatusCode::OK, Json(response)).into_response()
             }
             Err(e) => {
-                metrics::record_api_request(endpoint, "error");
-                metrics::record_error("api_inference");
+                metrics::record_inference_error();
                 error!(
                     endpoint,
                     request_id = request_id.as_deref().unwrap_or("-"),
@@ -178,6 +196,7 @@ pub async fn inference_handler(
             }
         }
     } else {
+        metrics::record_batch_request();
         match process_batch(
             model_service,
             request.input,
@@ -187,15 +206,13 @@ pub async fn inference_handler(
         .await
         {
             Ok(predictions) => {
-                metrics::record_api_request(endpoint, "success");
                 let response = InferenceResponse {
                     output: predictions,
                 };
                 (StatusCode::OK, Json(response)).into_response()
             }
             Err(e) => {
-                metrics::record_api_request(endpoint, "error");
-                metrics::record_error("api_batch_inference");
+                metrics::record_inference_error();
                 error!(
                     endpoint,
                     request_id = request_id.as_deref().unwrap_or("-"),
@@ -207,7 +224,7 @@ pub async fn inference_handler(
         }
     };
 
-    metrics::record_api_latency(endpoint, timer.elapsed_seconds());
+    metrics::record_inference_latency(timer.elapsed_seconds());
 
     result
 }
@@ -225,12 +242,7 @@ async fn process_batch(
         requested_model_version = model_version.as_deref().unwrap_or("auto"),
         "Batch inference started"
     );
-    metrics::record_batch_size(batch_size);
-
     let batch_timer = Timer::new();
-    for _ in 0..batch_size {
-        metrics::record_batch_item("started");
-    }
 
     let outputs = model_service
         .infer_batch_with_version_with_request_id(
@@ -242,16 +254,8 @@ async fn process_batch(
         .map(|(values, _)| values);
 
     match &outputs {
-        Ok(_) => {
-            for _ in 0..batch_size {
-                metrics::record_batch_item("success");
-            }
-        }
-        Err(_) => {
-            for _ in 0..batch_size {
-                metrics::record_batch_item("error");
-            }
-        }
+        Ok(_) => {}
+        Err(_) => metrics::record_inference_error(),
     }
 
     let duration = batch_timer.elapsed_seconds();
@@ -261,8 +265,7 @@ async fn process_batch(
         inference_duration_ms = (duration * 1000.0),
         "Batch inference completed"
     );
-    metrics::record_api_latency("batch_processing", duration);
-    metrics::record_batch_throughput(batch_size, duration);
+    metrics::record_inference_latency(duration);
 
     outputs
 }

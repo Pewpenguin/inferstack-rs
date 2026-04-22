@@ -24,18 +24,25 @@ WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && \
-    apt-get install -y ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system app && useradd --system --gid app --create-home app
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/inferstack-rs /app/inferstack-rs
 
 # Add model directory
-RUN mkdir -p /app/model
+RUN mkdir -p /app/model && chown -R app:app /app
 
 ENV MODEL_PATH=/app/model.onnx
-ENV PORT=3000
+ENV PORT=8080
 
-EXPOSE 3000
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+USER app
 
 CMD ["/app/inferstack-rs"]
