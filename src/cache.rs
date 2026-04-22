@@ -136,6 +136,39 @@ impl CacheService {
         }
     }
 
+    pub async fn get_many<T: DeserializeOwned>(
+        &self,
+        keys: Vec<String>,
+    ) -> Result<Vec<Option<T>>, AppError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut conn = self.pool.get().await.map_err(|e| {
+            AppError::CacheError(format!("Failed to get Redis connection from pool: {}", e))
+        })?;
+
+        let raw_results: Vec<Option<String>> = cmd("MGET")
+            .arg(&keys)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AppError::CacheError(format!("Failed to get values from Redis: {}", e)))?;
+
+        let mut results = Vec::with_capacity(raw_results.len());
+        for raw in raw_results {
+            if let Some(data) = raw {
+                let value = serde_json::from_str::<T>(&data).map_err(|e| {
+                    AppError::CacheError(format!("Failed to deserialize cached data: {}", e))
+                })?;
+                results.push(Some(value));
+            } else {
+                results.push(None);
+            }
+        }
+
+        Ok(results)
+    }
+
     pub async fn set<T: Serialize>(
         &self,
         key: &str,

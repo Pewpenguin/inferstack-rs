@@ -188,6 +188,119 @@ impl ModelService {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        if let Some(cache) = &self.cache {
+            let cache_keys = processed_inputs
+                .iter()
+                .map(|input| {
+                    CacheService::generate_key_with_version(
+                        &format!("inference:{}", model_version.version),
+                        input,
+                        1,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    AppError::CacheError(format!("Failed to generate batch cache keys: {}", e))
+                })?;
+
+            metrics::record_cache_operation("mget", "attempt");
+            match cache.get_many::<Vec<f32>>(cache_keys.clone()).await {
+                Ok(cached_results) => {
+                    let mut outputs = vec![None; processed_inputs.len()];
+                    let mut miss_indices = Vec::new();
+                    let mut miss_inputs = Vec::new();
+                    let mut miss_keys = Vec::new();
+
+                    for idx in 0..cached_results.len() {
+                        if let Some(value) = &cached_results[idx] {
+                            metrics::record_cache_operation("mget", "hit");
+                            outputs[idx] = Some(value.clone());
+                        } else {
+                            metrics::record_cache_operation("mget", "miss");
+                            miss_indices.push(idx);
+                            miss_inputs.push(processed_inputs[idx].clone());
+                            miss_keys.push(cache_keys[idx].clone());
+                        }
+                    }
+
+                    if !miss_inputs.is_empty() {
+                        let start = Instant::now();
+                        let miss_outputs = self
+                            .run_batch_inference_with_fallback(model_version, miss_inputs)
+                            .await?;
+                        let inference_time = start.elapsed().as_millis();
+
+                        let should_write_cache = if self.min_inference_ms_for_cache == 0 {
+                            true
+                        } else {
+                            inference_time > u128::from(self.min_inference_ms_for_cache)
+                        };
+
+                        if should_write_cache {
+                            let adaptive_ttl = self.cache_ttl.map(|base_ttl| {
+                                if inference_time > 100 {
+                                    base_ttl * 2
+                                } else if inference_time < 10 {
+                                    base_ttl / 2
+                                } else {
+                                    base_ttl
+                                }
+                            });
+
+                            for idx in 0..miss_outputs.len() {
+                                metrics::record_cache_operation("set", "attempt");
+                                match cache
+                                    .set_with_retry(
+                                        &miss_keys[idx],
+                                        &miss_outputs[idx],
+                                        adaptive_ttl,
+                                        2,
+                                        50,
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => metrics::record_cache_operation("set", "success"),
+                                    Err(e) => {
+                                        metrics::record_cache_operation("set", "error");
+                                        metrics::record_error("cache_set");
+                                        warn!(error = %e, "Batch cache write failed");
+                                    }
+                                }
+                            }
+                        }
+
+                        for idx in 0..miss_indices.len() {
+                            outputs[miss_indices[idx]] = Some(miss_outputs[idx].clone());
+                        }
+                    }
+
+                    let mut finalized = Vec::with_capacity(outputs.len());
+                    for output in outputs {
+                        finalized.push(output.ok_or_else(|| {
+                            AppError::InferenceError(
+                                "Missing output while assembling batch result".to_string(),
+                            )
+                        })?);
+                    }
+                    return Ok(finalized);
+                }
+                Err(e) => {
+                    metrics::record_cache_operation("mget", "error");
+                    metrics::record_error("cache_get");
+                    warn!(error = %e, "Batch cache lookup failed");
+                }
+            }
+        }
+
+        self.run_batch_inference_with_fallback(model_version, processed_inputs)
+            .await
+    }
+
+    async fn run_batch_inference_with_fallback(
+        &self,
+        model_version: &ModelVersion,
+        processed_inputs: Vec<Vec<f32>>,
+    ) -> Result<Vec<Vec<f32>>, AppError> {
         match self
             .run_batch_inference(model_version, processed_inputs.clone())
             .await
