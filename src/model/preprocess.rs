@@ -8,7 +8,7 @@ use super::{ModelService, ModelVersion};
 impl ModelService {
     pub(super) fn validate_input(
         &self,
-        _model_version: &ModelVersion,
+        model_version: &ModelVersion,
         input_data: &[f32],
     ) -> Result<(), AppError> {
         if input_data.is_empty() {
@@ -16,6 +16,31 @@ impl ModelService {
                 "Input data cannot be empty".to_string(),
             ));
         }
+
+        let input_spec = model_version
+            .spec
+            .inputs
+            .first()
+            .ok_or_else(|| AppError::ValidationError("Model has no input tensors".to_string()))?;
+        if !input_spec.shape.is_empty() {
+            let dims = if input_spec.shape.len() > 1 {
+                &input_spec.shape[1..]
+            } else {
+                &input_spec.shape[..]
+            };
+            if !dims.is_empty() && !dims.contains(&0) {
+                let expected_size = dims.iter().product::<usize>();
+                if input_data.len() != expected_size {
+                    return Err(AppError::ValidationError(format!(
+                        "Input '{}' size mismatch: got {}, expected {}",
+                        input_spec.name,
+                        input_data.len(),
+                        expected_size
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 

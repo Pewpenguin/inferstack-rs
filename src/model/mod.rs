@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
+use tract_core::internal::DimLike;
 use tract_core::prelude::*;
 use tract_onnx::prelude::*;
 
@@ -15,6 +16,26 @@ mod routing;
 
 type ModelType = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
+#[derive(Debug, Clone)]
+pub struct InputSpec {
+    pub name: String,
+    pub shape: Vec<usize>,
+    pub dtype: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutputSpec {
+    pub name: String,
+    pub shape: Vec<usize>,
+    pub dtype: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelSpec {
+    pub inputs: Vec<InputSpec>,
+    pub outputs: Vec<OutputSpec>,
+}
+
 pub struct RoutingEntry {
     pub version: String,
     #[allow(dead_code)]
@@ -25,6 +46,7 @@ pub struct RoutingEntry {
 pub struct ModelVersion {
     pub version: String,
     model: Arc<ModelType>,
+    pub spec: ModelSpec,
     #[allow(dead_code)]
     pub traffic_allocation: u8,
 }
@@ -40,6 +62,77 @@ pub struct ModelService {
 }
 
 impl ModelVersion {
+    fn extract_model_spec(
+        model: &TypedModel,
+        version: &str,
+    ) -> Result<ModelSpec, AppError> {
+        let inputs = model
+            .input_outlets()
+            .map_err(|e| {
+                AppError::ModelLoadError(format!(
+                    "Failed to read input outlets for model version {}: {}",
+                    version, e
+                ))
+            })?
+            .iter()
+            .map(|outlet| {
+                let node = model.node(outlet.node);
+                let fact = model.outlet_fact(*outlet).map_err(|e| {
+                    AppError::ModelLoadError(format!(
+                        "Failed to read input fact for model version {}: {}",
+                        version, e
+                    ))
+                })?;
+
+                let shape = fact
+                    .shape
+                    .iter()
+                    .map(|dim| dim.to_usize().unwrap_or(0))
+                    .collect::<Vec<usize>>();
+
+                Ok(InputSpec {
+                    name: node.name.clone(),
+                    shape,
+                    dtype: format!("{:?}", fact.datum_type),
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+
+        let outputs = model
+            .output_outlets()
+            .map_err(|e| {
+                AppError::ModelLoadError(format!(
+                    "Failed to read output outlets for model version {}: {}",
+                    version, e
+                ))
+            })?
+            .iter()
+            .map(|outlet| {
+                let node = model.node(outlet.node);
+                let fact = model.outlet_fact(*outlet).map_err(|e| {
+                    AppError::ModelLoadError(format!(
+                        "Failed to read output fact for model version {}: {}",
+                        version, e
+                    ))
+                })?;
+
+                let shape = fact
+                    .shape
+                    .iter()
+                    .map(|dim| dim.to_usize().unwrap_or(0))
+                    .collect::<Vec<usize>>();
+
+                Ok(OutputSpec {
+                    name: node.name.clone(),
+                    shape,
+                    dtype: format!("{:?}", fact.datum_type),
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+
+        Ok(ModelSpec { inputs, outputs })
+    }
+
     pub async fn new(
         version: String,
         model_path: &str,
@@ -69,6 +162,8 @@ impl ModelVersion {
             ))
         })?;
 
+        let spec = Self::extract_model_spec(&model, &version)?;
+
         let model = model.into_runnable().map_err(|e| {
             warn!("Failed to prepare model {} for running: {}", version, e);
             AppError::ModelLoadError(format!(
@@ -82,12 +177,31 @@ impl ModelVersion {
         Ok(Self {
             version,
             model: Arc::new(model),
+            spec,
             traffic_allocation,
         })
     }
 }
 
 impl ModelService {
+    pub fn model_spec_for_version(
+        &self,
+        requested_version: Option<&str>,
+    ) -> Result<&ModelSpec, AppError> {
+        if let Some(version) = requested_version {
+            let model = self
+                .models
+                .get(version)
+                .ok_or_else(|| AppError::NotFound(format!("Model version '{}' not found", version)))?;
+            return Ok(&model.spec);
+        }
+
+        self.models
+            .get(&self.default_version)
+            .map(|model| &model.spec)
+            .ok_or_else(|| AppError::InternalError("Default model version not found".to_string()))
+    }
+
     pub async fn new_with_versions(
         model_configs: Vec<(String, String, u8)>,
         default_version: Option<String>,

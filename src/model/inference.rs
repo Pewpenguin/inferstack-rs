@@ -11,6 +11,63 @@ use crate::metrics;
 use super::{ModelService, ModelVersion};
 
 impl ModelService {
+    fn expected_feature_count(model_version: &ModelVersion) -> Result<Option<usize>, AppError> {
+        let input_spec = model_version
+            .spec
+            .inputs
+            .first()
+            .ok_or_else(|| AppError::ValidationError("Model has no input tensors".to_string()))?;
+
+        if input_spec.shape.is_empty() {
+            return Ok(None);
+        }
+
+        let dims = if input_spec.shape.len() > 1 {
+            &input_spec.shape[1..]
+        } else {
+            &input_spec.shape[..]
+        };
+
+        if dims.is_empty() || dims.contains(&0) {
+            return Ok(None);
+        }
+
+        Ok(Some(dims.iter().product()))
+    }
+
+    fn input_shape_for_batch(
+        model_version: &ModelVersion,
+        batch_size: usize,
+        feature_count: usize,
+    ) -> Result<Vec<usize>, AppError> {
+        let expected = Self::expected_feature_count(model_version)?;
+        let effective_features = expected.unwrap_or(feature_count);
+
+        if feature_count != effective_features {
+            return Err(AppError::ValidationError(format!(
+                "Input tensor size mismatch: got {}, expected {}",
+                feature_count, effective_features
+            )));
+        }
+
+        let input_spec = model_version
+            .spec
+            .inputs
+            .first()
+            .ok_or_else(|| AppError::ValidationError("Model has no input tensors".to_string()))?;
+
+        if input_spec.shape.len() <= 1 {
+            return Ok(vec![batch_size, effective_features]);
+        }
+
+        let mut shape = Vec::with_capacity(input_spec.shape.len());
+        shape.push(batch_size);
+        for dim in &input_spec.shape[1..] {
+            shape.push(if *dim == 0 { 1 } else { *dim });
+        }
+        Ok(shape)
+    }
+
     pub(super) async fn infer_with_metrics(
         &self,
         model_version: &ModelVersion,
@@ -138,7 +195,11 @@ impl ModelService {
         model_version: &ModelVersion,
         input_data: Vec<f32>,
     ) -> Result<Vec<f32>, AppError> {
-        let input = tract_ndarray::Array::from_shape_vec((1, input_data.len()), input_data)
+        let input_shape = Self::input_shape_for_batch(model_version, 1, input_data.len())?;
+        let input = tract_ndarray::ArrayD::from_shape_vec(
+            tract_ndarray::IxDyn(&input_shape),
+            input_data,
+        )
             .map_err(|e| {
                 AppError::InferenceError(format!("Failed to create input tensor: {}", e))
             })?;
@@ -326,10 +387,15 @@ impl ModelService {
 
         let batch_size = inputs.len();
         let flattened = inputs.into_iter().flatten().collect::<Vec<f32>>();
-        let input = tract_ndarray::Array::from_shape_vec((batch_size, feature_count), flattened)
-            .map_err(|e| {
-                AppError::InferenceError(format!("Failed to create batched input tensor: {}", e))
-            })?;
+        let input_shape = Self::input_shape_for_batch(model_version, batch_size, feature_count)?;
+        let input =
+            tract_ndarray::ArrayD::from_shape_vec(tract_ndarray::IxDyn(&input_shape), flattened)
+                .map_err(|e| {
+                    AppError::InferenceError(format!(
+                        "Failed to create batched input tensor: {}",
+                        e
+                    ))
+                })?;
 
         let model = model_version.model.clone();
         let batched_output = spawn_blocking(move || -> Result<Vec<Vec<f32>>, AppError> {
