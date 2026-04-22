@@ -154,10 +154,6 @@ impl ModelService {
 
         let model = model_version.model.clone();
         let output_values = spawn_blocking(move || -> Result<Vec<f32>, AppError> {
-            let model = model.lock().map_err(|e| {
-                AppError::InferenceError(format!("Failed to lock model for inference: {}", e))
-            })?;
-
             let result = model.run(tvec![input.into_tvalue()]).map_err(|e| {
                 AppError::InferenceError(format!("Failed to run inference: {}", e))
             })?;
@@ -245,13 +241,6 @@ impl ModelService {
 
         let model = model_version.model.clone();
         let batched_output = spawn_blocking(move || -> Result<Vec<Vec<f32>>, AppError> {
-            let model = model.lock().map_err(|e| {
-                AppError::InferenceError(format!(
-                    "Failed to lock model for batch inference: {}",
-                    e
-                ))
-            })?;
-
             let result = model.run(tvec![input.into_tvalue()]).map_err(|e| {
                 AppError::InferenceError(format!("Failed to run batch inference: {}", e))
             })?;

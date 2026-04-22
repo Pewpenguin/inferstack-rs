@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tracing::{info, warn};
 use tract_core::prelude::*;
 use tract_onnx::prelude::*;
@@ -25,7 +24,7 @@ pub struct RoutingEntry {
 
 pub struct ModelVersion {
     pub version: String,
-    model: Arc<Mutex<ModelType>>,
+    model: Arc<ModelType>,
     #[allow(dead_code)]
     pub traffic_allocation: u8,
 }
@@ -82,7 +81,7 @@ impl ModelVersion {
 
         Ok(Self {
             version,
-            model: Arc::new(Mutex::new(model)),
+            model: Arc::new(model),
             traffic_allocation,
         })
     }
