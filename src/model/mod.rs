@@ -184,6 +184,19 @@ impl ModelVersion {
 }
 
 impl ModelService {
+    pub fn model_specs(&self) -> Vec<(String, ModelSpec)> {
+        let mut versions = self.models.keys().cloned().collect::<Vec<String>>();
+        versions.sort();
+        versions
+            .into_iter()
+            .filter_map(|version| {
+                self.models
+                    .get(&version)
+                    .map(|model| (version, model.spec.clone()))
+            })
+            .collect()
+    }
+
     pub fn model_spec_for_version(
         &self,
         requested_version: Option<&str>,
@@ -285,7 +298,7 @@ impl ModelService {
         &self,
         input_data: Vec<f32>,
         version: Option<&str>,
-    ) -> Result<(Vec<f32>, String), AppError> {
+    ) -> Result<(HashMap<String, Vec<f32>>, String), AppError> {
         self.infer_with_version_with_request_id(input_data, version, None)
             .await
     }
@@ -295,7 +308,7 @@ impl ModelService {
         input_data: Vec<f32>,
         version: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<(Vec<f32>, String), AppError> {
+    ) -> Result<(HashMap<String, Vec<f32>>, String), AppError> {
         let timer = Timer::new();
         let mut cached = false;
 
@@ -402,7 +415,7 @@ impl ModelService {
         inputs: Vec<Vec<f32>>,
         version: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<(Vec<Vec<f32>>, String), AppError> {
+    ) -> Result<(Vec<HashMap<String, Vec<f32>>>, String), AppError> {
         let timer = Timer::new();
         let batch_size = inputs.len();
         metrics::record_inference_request();

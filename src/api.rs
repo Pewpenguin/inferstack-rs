@@ -32,6 +32,21 @@ pub struct AppState {
 }
 
 impl InferenceRequest {
+    fn schema_accepts_f32(dtype: &str) -> bool {
+        let normalized = dtype.trim().to_ascii_uppercase();
+        normalized == "F32" || normalized == "FLOAT32"
+    }
+
+    fn validate_tensor_dtype(spec: &InputSpec) -> Result<(), AppError> {
+        if !Self::schema_accepts_f32(&spec.dtype) {
+            return Err(AppError::ValidationError(format!(
+                "Input '{}' expects dtype '{}' but request tensors are f32",
+                spec.name, spec.dtype
+            )));
+        }
+        Ok(())
+    }
+
     fn expected_tensor_size(input_spec: &InputSpec) -> Option<usize> {
         if input_spec.shape.is_empty() {
             return None;
@@ -108,6 +123,7 @@ impl InferenceRequest {
             let value = named_inputs.get(&spec.name).ok_or_else(|| {
                 AppError::ValidationError(format!("Missing required model input '{}'", spec.name))
             })?;
+            Self::validate_tensor_dtype(spec)?;
             if let Some(expected) = Self::expected_tensor_size(spec) {
                 if value.len() != expected {
                     return Err(AppError::ValidationError(format!(
@@ -158,6 +174,7 @@ impl InferenceRequest {
         let first_input_spec = model_spec.inputs.first().ok_or_else(|| {
             AppError::ValidationError("Model has no input tensors".to_string())
         })?;
+        Self::validate_tensor_dtype(first_input_spec)?;
         let tensor = &legacy_inputs[0];
         if let Some(expected) = Self::expected_tensor_size(first_input_spec) {
             if tensor.len() != expected {
@@ -208,6 +225,7 @@ impl InferenceRequest {
         let first_input_spec = model_spec.inputs.first().ok_or_else(|| {
             AppError::ValidationError("Model has no input tensors".to_string())
         })?;
+        Self::validate_tensor_dtype(first_input_spec)?;
         let expected = Self::expected_tensor_size(first_input_spec);
 
         for tensor in legacy_inputs {
@@ -244,8 +262,37 @@ impl InferenceRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum NamedOutputs {
+    Single(HashMap<String, Vec<f32>>),
+    Batch(Vec<HashMap<String, Vec<f32>>>),
+}
+
+#[derive(Debug, Serialize)]
 pub struct InferenceResponse {
-    output: Vec<Vec<f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<Vec<Vec<f32>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outputs: Option<NamedOutputs>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TensorMetadata {
+    name: String,
+    shape: Vec<usize>,
+    dtype: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelMetadata {
+    version: String,
+    inputs: Vec<TensorMetadata>,
+    outputs: Vec<TensorMetadata>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelsResponse {
+    models: Vec<ModelMetadata>,
 }
 
 #[derive(Debug, Serialize)]
@@ -277,6 +324,54 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
             redis_connected,
         }),
     )
+}
+
+fn normalize_dtype(dtype: &str) -> String {
+    match dtype.trim().to_ascii_uppercase().as_str() {
+        "F32" => "float32".to_string(),
+        "F64" => "float64".to_string(),
+        "I8" => "int8".to_string(),
+        "I16" => "int16".to_string(),
+        "I32" => "int32".to_string(),
+        "I64" => "int64".to_string(),
+        "U8" => "uint8".to_string(),
+        "U16" => "uint16".to_string(),
+        "U32" => "uint32".to_string(),
+        "U64" => "uint64".to_string(),
+        "BOOL" => "bool".to_string(),
+        _ => dtype.to_ascii_lowercase(),
+    }
+}
+
+fn build_tensor_metadata(spec: &InputSpec) -> TensorMetadata {
+    TensorMetadata {
+        name: spec.name.clone(),
+        shape: spec.shape.clone(),
+        dtype: normalize_dtype(&spec.dtype),
+    }
+}
+
+pub async fn models_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let models = state
+        .model_service
+        .model_specs()
+        .into_iter()
+        .map(|(version, spec)| ModelMetadata {
+            version,
+            inputs: spec.inputs.iter().map(build_tensor_metadata).collect(),
+            outputs: spec
+                .outputs
+                .iter()
+                .map(|output| TensorMetadata {
+                    name: output.name.clone(),
+                    shape: output.shape.clone(),
+                    dtype: normalize_dtype(&output.dtype),
+                })
+                .collect(),
+        })
+        .collect::<Vec<ModelMetadata>>();
+
+    (StatusCode::OK, Json(ModelsResponse { models }))
 }
 
 pub async fn inference_handler(
@@ -346,6 +441,7 @@ pub async fn inference_handler(
         }
     };
     let result = if !request.batch {
+        let primary_output_name = model_spec.outputs.first().map(|output| output.name.clone());
         match model_service
             .infer_with_version_with_request_id(
                 resolved_inputs[0].clone(),
@@ -355,8 +451,28 @@ pub async fn inference_handler(
             .await
         {
             Ok((prediction, _executed_version)) => {
+                let legacy_output = match primary_output_name.as_ref() {
+                    Some(name) => match prediction.get(name) {
+                        Some(values) => Some(vec![values.clone()]),
+                        None => {
+                            let err = AppError::InferenceError(format!(
+                                "Primary output '{}' missing from inference result",
+                                name
+                            ));
+                            error!(
+                                endpoint,
+                                request_id = request_id.as_deref().unwrap_or("-"),
+                                error = %err,
+                                "Inference response mapping failed"
+                            );
+                            return err.into_response();
+                        }
+                    },
+                    None => None,
+                };
                 let response = InferenceResponse {
-                    output: vec![prediction],
+                    output: legacy_output,
+                    outputs: Some(NamedOutputs::Single(prediction)),
                 };
                 (StatusCode::OK, Json(response)).into_response()
             }
@@ -373,6 +489,7 @@ pub async fn inference_handler(
         }
     } else {
         metrics::record_batch_request();
+        let primary_output_name = model_spec.outputs.first().map(|output| output.name.clone());
         match process_batch(
             model_service,
             resolved_inputs,
@@ -382,8 +499,34 @@ pub async fn inference_handler(
         .await
         {
             Ok(predictions) => {
+                let legacy_output = match primary_output_name.as_ref() {
+                    Some(name) => {
+                        let mut legacy = Vec::with_capacity(predictions.len());
+                        for prediction in &predictions {
+                            match prediction.get(name) {
+                                Some(values) => legacy.push(values.clone()),
+                                None => {
+                                    let err = AppError::InferenceError(format!(
+                                        "Primary output '{}' missing from batch inference result",
+                                        name
+                                    ));
+                                    error!(
+                                        endpoint,
+                                        request_id = request_id.as_deref().unwrap_or("-"),
+                                        error = %err,
+                                        "Batch inference response mapping failed"
+                                    );
+                                    return err.into_response();
+                                }
+                            }
+                        }
+                        Some(legacy)
+                    }
+                    None => None,
+                };
                 let response = InferenceResponse {
-                    output: predictions,
+                    output: legacy_output,
+                    outputs: Some(NamedOutputs::Batch(predictions)),
                 };
                 (StatusCode::OK, Json(response)).into_response()
             }
@@ -410,7 +553,7 @@ async fn process_batch(
     inputs: Vec<Vec<f32>>,
     model_version: Option<String>,
     request_id: Option<String>,
-) -> Result<Vec<Vec<f32>>, AppError> {
+) -> Result<Vec<HashMap<String, Vec<f32>>>, AppError> {
     let batch_size = inputs.len();
     info!(
         request_id = request_id.as_deref().unwrap_or("-"),
@@ -466,6 +609,7 @@ pub mod routes {
 
         Router::new()
             .route("/health", get(health_check))
+            .route("/models", get(models_handler))
             .route("/infer", post(inference_handler))
             .route("/batch", post(batch_inference_handler))
             .with_state(state)

@@ -44,14 +44,36 @@ async fn test_requested_version_override() {
         .await
         .expect("infer v2");
     assert_eq!(ver, "v2");
-    assert_eq!(out, vec![2.0, 3.0, 4.0, 5.0]);
+    let v2_output_name = ms
+        .model_spec_for_version(Some("v2"))
+        .expect("v2 spec")
+        .outputs
+        .first()
+        .expect("v2 output")
+        .name
+        .clone();
+    assert_eq!(
+        out.get(&v2_output_name).expect("v2 output tensor"),
+        &vec![2.0, 3.0, 4.0, 5.0]
+    );
 
     let (out2, ver2) = ms
         .infer_with_version(vec![1.0, 2.0, 3.0, 4.0], Some("v1"))
         .await
         .expect("infer v1");
     assert_eq!(ver2, "v1");
-    assert_eq!(out2, vec![1.0, 2.0, 3.0, 4.0]);
+    let v1_output_name = ms
+        .model_spec_for_version(Some("v1"))
+        .expect("v1 spec")
+        .outputs
+        .first()
+        .expect("v1 output")
+        .name
+        .clone();
+    assert_eq!(
+        out2.get(&v1_output_name).expect("v1 output tensor"),
+        &vec![1.0, 2.0, 3.0, 4.0]
+    );
 }
 
 #[tokio::test]

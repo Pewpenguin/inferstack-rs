@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use tokio::task::spawn_blocking;
@@ -11,6 +12,45 @@ use crate::metrics;
 use super::{ModelService, ModelVersion};
 
 impl ModelService {
+    fn validate_input_dtype_for_execution(model_version: &ModelVersion) -> Result<(), AppError> {
+        let input_spec = model_version
+            .spec
+            .inputs
+            .first()
+            .ok_or_else(|| AppError::ValidationError("Model has no input tensors".to_string()))?;
+        let normalized = input_spec.dtype.trim().to_ascii_uppercase();
+        if normalized != "F32" && normalized != "FLOAT32" {
+            return Err(AppError::ValidationError(format!(
+                "Input '{}' expects dtype '{}' but runtime input tensors are f32",
+                input_spec.name, input_spec.dtype
+            )));
+        }
+        Ok(())
+    }
+
+    fn map_named_outputs(
+        output_names: &[String],
+        result: TVec<TValue>,
+    ) -> Result<HashMap<String, Vec<f32>>, AppError> {
+        if result.len() != output_names.len() {
+            return Err(AppError::InferenceError(format!(
+                "Model output count {} does not match spec output count {}",
+                result.len(),
+                output_names.len()
+            )));
+        }
+
+        let mut outputs = HashMap::with_capacity(result.len());
+        for (idx, output_value) in result.into_iter().enumerate() {
+            let output = output_value.to_array_view::<f32>().map_err(|e| {
+                AppError::InferenceError(format!("Failed to convert output to array: {}", e))
+            })?;
+            outputs.insert(output_names[idx].clone(), output.iter().copied().collect());
+        }
+
+        Ok(outputs)
+    }
+
     fn expected_feature_count(model_version: &ModelVersion) -> Result<Option<usize>, AppError> {
         let input_spec = model_version
             .spec
@@ -74,7 +114,8 @@ impl ModelService {
         input_data: &[f32],
         cached: &mut bool,
         request_id: Option<&str>,
-    ) -> Result<Vec<f32>, AppError> {
+    ) -> Result<HashMap<String, Vec<f32>>, AppError> {
+        Self::validate_input_dtype_for_execution(model_version)?;
         self.validate_input(model_version, input_data)?;
 
         let processed_input = self.preprocess_input(input_data)?;
@@ -87,7 +128,10 @@ impl ModelService {
             )
             .map_err(|e| AppError::CacheError(format!("Failed to generate cache key: {}", e)))?;
 
-            match cache.get_with_retry::<Vec<f32>>(&cache_key, 2, 50).await {
+            match cache
+                .get_with_retry::<HashMap<String, Vec<f32>>>(&cache_key, 2, 50)
+                .await
+            {
                 Ok(Some(cached_result)) => {
                     info!(
                         request_id = request_id.unwrap_or("-"),
@@ -194,7 +238,7 @@ impl ModelService {
         &self,
         model_version: &ModelVersion,
         input_data: Vec<f32>,
-    ) -> Result<Vec<f32>, AppError> {
+    ) -> Result<HashMap<String, Vec<f32>>, AppError> {
         let input_shape = Self::input_shape_for_batch(model_version, 1, input_data.len())?;
         let input = tract_ndarray::ArrayD::from_shape_vec(
             tract_ndarray::IxDyn(&input_shape),
@@ -205,16 +249,17 @@ impl ModelService {
             })?;
 
         let model = model_version.model.clone();
-        let output_values = spawn_blocking(move || -> Result<Vec<f32>, AppError> {
+        let output_names = model_version
+            .spec
+            .outputs
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<Vec<String>>();
+        let output_values = spawn_blocking(move || -> Result<HashMap<String, Vec<f32>>, AppError> {
             let result = model
                 .run(tvec![input.into_tvalue()])
                 .map_err(|e| AppError::InferenceError(format!("Failed to run inference: {}", e)))?;
-
-            let output = result[0].to_array_view::<f32>().map_err(|e| {
-                AppError::InferenceError(format!("Failed to convert output to array: {}", e))
-            })?;
-
-            Ok(output.iter().copied().collect())
+            Self::map_named_outputs(&output_names, result)
         })
         .await
         .map_err(|e| AppError::InferenceError(format!("Inference task join error: {}", e)))??;
@@ -225,7 +270,8 @@ impl ModelService {
         &self,
         model_version: &ModelVersion,
         inputs: Vec<Vec<f32>>,
-    ) -> Result<Vec<Vec<f32>>, AppError> {
+    ) -> Result<Vec<HashMap<String, Vec<f32>>>, AppError> {
+        Self::validate_input_dtype_for_execution(model_version)?;
         let processed_inputs = inputs
             .iter()
             .map(|input| {
@@ -249,7 +295,10 @@ impl ModelService {
                     AppError::CacheError(format!("Failed to generate batch cache keys: {}", e))
                 })?;
 
-            match cache.get_many::<Vec<f32>>(cache_keys.clone()).await {
+            match cache
+                .get_many::<HashMap<String, Vec<f32>>>(cache_keys.clone())
+                .await
+            {
                 Ok(cached_results) => {
                     let mut outputs = vec![None; processed_inputs.len()];
                     let mut miss_indices = Vec::new();
@@ -342,7 +391,7 @@ impl ModelService {
         &self,
         model_version: &ModelVersion,
         processed_inputs: Vec<Vec<f32>>,
-    ) -> Result<Vec<Vec<f32>>, AppError> {
+    ) -> Result<Vec<HashMap<String, Vec<f32>>>, AppError> {
         match self
             .run_batch_inference(model_version, processed_inputs.clone())
             .await
@@ -365,7 +414,7 @@ impl ModelService {
         &self,
         model_version: &ModelVersion,
         inputs: Vec<Vec<f32>>,
-    ) -> Result<Vec<Vec<f32>>, AppError> {
+    ) -> Result<Vec<HashMap<String, Vec<f32>>>, AppError> {
         if inputs.is_empty() {
             return Err(AppError::ValidationError(
                 "Batch size must be greater than zero".to_string(),
@@ -398,53 +447,77 @@ impl ModelService {
                 })?;
 
         let model = model_version.model.clone();
-        let batched_output = spawn_blocking(move || -> Result<Vec<Vec<f32>>, AppError> {
+        let output_names = model_version
+            .spec
+            .outputs
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<Vec<String>>();
+        let batched_output =
+            spawn_blocking(move || -> Result<Vec<HashMap<String, Vec<f32>>>, AppError> {
             let result = model.run(tvec![input.into_tvalue()]).map_err(|e| {
                 AppError::InferenceError(format!("Failed to run batch inference: {}", e))
             })?;
-
-            let output = result[0].to_array_view::<f32>().map_err(|e| {
-                AppError::InferenceError(format!("Failed to convert batch output to array: {}", e))
-            })?;
-
-            let output_shape = output.shape();
-            if output_shape.is_empty() {
-                return Err(AppError::InferenceError(
-                    "Batch output tensor has no dimensions".to_string(),
-                ));
-            }
-
-            if output_shape[0] != batch_size {
+            if result.len() != output_names.len() {
                 return Err(AppError::InferenceError(format!(
-                    "Batch output row count {} does not match input batch size {}",
-                    output_shape[0], batch_size
+                    "Model output count {} does not match spec output count {}",
+                    result.len(),
+                    output_names.len()
                 )));
             }
 
-            let row_width = if output_shape.len() == 1 {
-                1
-            } else {
-                output_shape[1..].iter().product::<usize>()
-            };
+            let mut rows = vec![HashMap::<String, Vec<f32>>::new(); batch_size];
 
-            let values = output.iter().copied().collect::<Vec<f32>>();
-            if values.len() != batch_size * row_width {
-                return Err(AppError::InferenceError(format!(
-                    "Batch output size {} does not match expected {}",
-                    values.len(),
-                    batch_size * row_width
-                )));
+            for (idx, output_value) in result.into_iter().enumerate() {
+                let output_name = &output_names[idx];
+                let output = output_value.to_array_view::<f32>().map_err(|e| {
+                    AppError::InferenceError(format!(
+                        "Failed to convert batch output to array: {}",
+                        e
+                    ))
+                })?;
+
+                let output_shape = output.shape();
+                if output_shape.is_empty() {
+                    return Err(AppError::InferenceError(format!(
+                        "Batch output tensor '{}' has no dimensions",
+                        output_name
+                    )));
+                }
+
+                if output_shape[0] != batch_size {
+                    return Err(AppError::InferenceError(format!(
+                        "Batch output '{}' row count {} does not match input batch size {}",
+                        output_name, output_shape[0], batch_size
+                    )));
+                }
+
+                let row_width = if output_shape.len() == 1 {
+                    1
+                } else {
+                    output_shape[1..].iter().product::<usize>()
+                };
+                let values = output.iter().copied().collect::<Vec<f32>>();
+                if values.len() != batch_size * row_width {
+                    return Err(AppError::InferenceError(format!(
+                        "Batch output '{}' size {} does not match expected {}",
+                        output_name,
+                        values.len(),
+                        batch_size * row_width
+                    )));
+                }
+
+                for (row_idx, chunk) in values.chunks(row_width).enumerate() {
+                    rows[row_idx].insert(output_name.clone(), chunk.to_vec());
+                }
             }
 
-            Ok(values
-                .chunks(row_width)
-                .map(|chunk| chunk.to_vec())
-                .collect::<Vec<Vec<f32>>>())
+            Ok(rows)
         })
-        .await
-        .map_err(|e| {
-            AppError::InferenceError(format!("Batch inference task join error: {}", e))
-        })??;
+            .await
+            .map_err(|e| {
+                AppError::InferenceError(format!("Batch inference task join error: {}", e))
+            })??;
         Ok(batched_output)
     }
 }
